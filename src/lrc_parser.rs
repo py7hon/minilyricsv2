@@ -29,7 +29,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
             if let Some(close_idx) = trimmed.find(']') {
                 let time_str = &trimmed[1..close_idx];
                 let mut raw_text = trimmed[close_idx + 1..].trim();
-                
+
                 let mut sub_text = None;
                 if let Some(sub_idx) = raw_text.find("|sub:") {
                     let sub_part = &raw_text[sub_idx + 5..];
@@ -66,13 +66,20 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
         let line_duration_ms = if let Some(end) = lines[i].end_time {
             end.saturating_sub(lines[i].time).as_millis() as u64
         } else {
-            4000 
+            4000
         };
 
-        let has_custom_duration = lines[i].syllables.iter().any(|s| s.duration.as_millis() != 300);
+        let has_custom_duration = lines[i]
+            .syllables
+            .iter()
+            .any(|s| s.duration.as_millis() != 300);
 
         if !has_custom_duration {
-            let total_chars: usize = lines[i].syllables.iter().map(|s| s.text.chars().count()).sum();
+            let total_chars: usize = lines[i]
+                .syllables
+                .iter()
+                .map(|s| s.text.chars().count())
+                .sum();
             if total_chars > 0 {
                 let max_realistic_ms = (total_chars as u64 * 150).max(1500).min(5000);
                 let effective_ms = line_duration_ms.min(max_realistic_ms);
@@ -97,10 +104,16 @@ fn parse_lrc_time_str(s: &str) -> Option<Duration> {
         let secs: u64 = sec_parts[0].parse().ok()?;
         let millis = if sec_parts.len() > 1 {
             let m_str = sec_parts[1];
-            if m_str.len() == 2 { m_str.parse::<u64>().ok()? * 10 }
-            else if m_str.len() == 1 { m_str.parse::<u64>().ok()? * 100 }
-            else { m_str[..3].parse::<u64>().ok()? }
-        } else { 0 };
+            if m_str.len() == 2 {
+                m_str.parse::<u64>().ok()? * 10
+            } else if m_str.len() == 1 {
+                m_str.parse::<u64>().ok()? * 100
+            } else {
+                m_str[..3].parse::<u64>().ok()?
+            }
+        } else {
+            0
+        };
         Some(Duration::from_millis(mins * 60000 + secs * 1000 + millis))
     } else {
         None
@@ -113,7 +126,7 @@ fn is_cjk(c: char) -> bool {
     (u >= 0x4E00 && u <= 0x9FFF) || // CJK Unified Ideographs (Hanzi / Kanji)
     (u >= 0x3040 && u <= 0x309F) || // Hiragana
     (u >= 0x30A0 && u <= 0x30FF) || // Katakana
-    (u >= 0xAC00 && u <= 0xD7AF)    // Hangul (Korea)
+    (u >= 0xAC00 && u <= 0xD7AF) // Hangul (Korea)
 }
 
 fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
@@ -132,15 +145,15 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
             } else if ch == '>' {
                 in_duration = false;
                 let dur_ms = dur_str.parse::<u64>().unwrap_or(300);
-                
+
                 if !current_text.is_empty() {
                     syllables.push(Syllable {
-                        text: current_text.clone(), 
+                        text: current_text.clone(),
                         duration: Duration::from_millis(dur_ms),
                     });
                     plain_text.push_str(&current_text);
                 }
-                
+
                 current_text.clear();
                 dur_str.clear();
             } else if in_duration {
@@ -202,7 +215,9 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
 }
 
 pub fn find_current_line(lines: &[LrcLine], pos: Duration) -> Option<usize> {
-    if lines.is_empty() { return None; }
+    if lines.is_empty() {
+        return None;
+    }
     let mut best_idx = 0;
     for (i, line) in lines.iter().enumerate() {
         if line.time <= pos {

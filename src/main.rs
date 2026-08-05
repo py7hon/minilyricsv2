@@ -140,9 +140,13 @@ async fn main() {
 
                         for line in &mut parsed_lines {
                             if line.sub_text.is_none()
-                                || line.sub_text.as_ref().map_or(true, |st| st.trim().is_empty())
+                                || line
+                                    .sub_text
+                                    .as_ref()
+                                    .map_or(true, |st| st.trim().is_empty())
                             {
-                                if let Some(trans) = lyrics_client.translate_text(&line.text).await {
+                                if let Some(trans) = lyrics_client.translate_text(&line.text).await
+                                {
                                     line.sub_text = Some(trans);
                                 }
                             }

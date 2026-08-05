@@ -16,9 +16,11 @@ pub struct MediaInfo {
     pub is_playing: bool,
 }
 
-// Menghitung tick internal Windows untuk interpolasi waktu 
+// Menghitung tick internal Windows untuk interpolasi waktu
 fn get_current_windows_ticks() -> i64 {
-    if let Ok(duration) = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH) {
+    if let Ok(duration) =
+        std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)
+    {
         let secs_ticks = duration.as_secs() as i64 * 10_000_000;
         let subsec_ticks = (duration.subsec_nanos() / 100) as i64;
         secs_ticks + subsec_ticks + 116_444_736_000_000_000
@@ -42,7 +44,9 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
 
         loop {
             if manager_opt.is_none() && tokio::time::Instant::now() >= manager_retry_at {
-                if let Ok(async_op) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync() {
+                if let Ok(async_op) =
+                    GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+                {
                     if let Ok(m) = async_op.get() {
                         manager_opt = Some(m);
                     }
@@ -52,16 +56,20 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
 
             if let Some(ref manager) = manager_opt {
                 if let Ok(session) = manager.GetCurrentSession() {
-                    
                     // Cek metadata judul & artis maksimal 1 kali per detik (1000ms) untuk menghemat CPU
                     if last_prop_check.elapsed().as_millis() > 1000 {
                         last_prop_check = tokio::time::Instant::now();
                         if let Ok(properties_async) = session.TryGetMediaPropertiesAsync() {
                             if let Ok(properties) = properties_async.get() {
-                                if let (Ok(title_h), Ok(artist_h)) = (properties.Title(), properties.Artist()) {
+                                if let (Ok(title_h), Ok(artist_h)) =
+                                    (properties.Title(), properties.Artist())
+                                {
                                     current_title = title_h.to_string();
                                     current_artist = artist_h.to_string();
-                                    current_album = properties.AlbumTitle().map(|a| a.to_string()).unwrap_or_default();
+                                    current_album = properties
+                                        .AlbumTitle()
+                                        .map(|a| a.to_string())
+                                        .unwrap_or_default();
                                 }
                             }
                         }
@@ -75,15 +83,19 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                         if let Ok(end) = timeline.EndTime() {
                             current_duration_ms = (end.Duration / 10_000) as u64;
                         }
-                        
+
                         if let Ok(position_ticks) = timeline.Position() {
                             let base_ms = (position_ticks.Duration / 10_000) as u64;
-                            
+
                             is_playing = if let Ok(info) = session.GetPlaybackInfo() {
                                 if let Ok(status) = info.PlaybackStatus() {
                                     status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
-                                } else { false }
-                            } else { false };
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
 
                             position_ms = if is_playing {
                                 if let Ok(last_updated) = timeline.LastUpdatedTime() {

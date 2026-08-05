@@ -26,7 +26,10 @@ pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
             for idx in [2, 3, 0, 1] {
                 if let Some(t) = last_item.get(idx).and_then(|v| v.as_str()) {
                     let cleaned = t.trim().to_string();
-                    if !cleaned.is_empty() && cleaned != clean && !cleaned.chars().all(|c| c.is_numeric()) {
+                    if !cleaned.is_empty()
+                        && cleaned != clean
+                        && !cleaned.chars().all(|c| c.is_numeric())
+                    {
                         return Some(cleaned);
                     }
                 }
@@ -38,7 +41,10 @@ pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
                 for idx in [2, 3] {
                     if let Some(t) = item_arr.get(idx).and_then(|v| v.as_str()) {
                         let cleaned = t.trim().to_string();
-                        if !cleaned.is_empty() && cleaned != clean && !cleaned.chars().all(|c| c.is_numeric()) {
+                        if !cleaned.is_empty()
+                            && cleaned != clean
+                            && !cleaned.chars().all(|c| c.is_numeric())
+                        {
                             return Some(cleaned);
                         }
                     }
@@ -49,7 +55,11 @@ pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
         let mut parts = Vec::new();
         for item in arr {
             if let Some(item_arr) = item.as_array() {
-                if let Some(p) = item_arr.get(0).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                if let Some(p) = item_arr
+                    .get(0)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
                     parts.push(p.trim().to_string());
                 }
             }

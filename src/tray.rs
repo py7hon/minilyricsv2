@@ -33,7 +33,9 @@ pub fn add_tray_icon(hwnd: HWND) {
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = LoadIconW(None, IDI_INFORMATION).unwrap_or_default();
 
-        let tip: Vec<u16> = "Mini Lyric v2 (Right-click for Menu)\0".encode_utf16().collect();
+        let tip: Vec<u16> = "Mini Lyric v2 (Right-click for Menu)\0"
+            .encode_utf16()
+            .collect();
         nid.szTip[..tip.len()].copy_from_slice(&tip);
 
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
@@ -67,7 +69,10 @@ pub fn toggle_lock_state(hwnd: HWND) {
                 let _ = SetWindowPos(
                     hwnd,
                     None,
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE,
                 );
                 let _ = InvalidateRect(hwnd, None, false);
@@ -110,20 +115,68 @@ pub fn show_tray_menu(hwnd: HWND) {
         let offset_reset_w: Vec<u16> = "Sync: Reset Offset (0ms)\0".encode_utf16().collect();
         let exit_w: Vec<u16> = "Exit Mini Lyric\0".encode_utf16().collect();
 
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_LOCK as usize, PCWSTR(lock_w.as_ptr()));
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_LOCK as usize,
+            PCWSTR(lock_w.as_ptr()),
+        );
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_SIZE_SMALL as usize, PCWSTR(small_w.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_SIZE_MEDIUM as usize, PCWSTR(med_w.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_SIZE_LARGE as usize, PCWSTR(large_w.as_ptr()));
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_SIZE_SMALL as usize,
+            PCWSTR(small_w.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_SIZE_MEDIUM as usize,
+            PCWSTR(med_w.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_SIZE_LARGE as usize,
+            PCWSTR(large_w.as_ptr()),
+        );
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_OFFSET_PLUS as usize, PCWSTR(offset_plus_w.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_OFFSET_MINUS as usize, PCWSTR(offset_minus_w.as_ptr()));
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_OFFSET_RESET as usize, PCWSTR(offset_reset_w.as_ptr()));
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_OFFSET_PLUS as usize,
+            PCWSTR(offset_plus_w.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_OFFSET_MINUS as usize,
+            PCWSTR(offset_minus_w.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_OFFSET_RESET as usize,
+            PCWSTR(offset_reset_w.as_ptr()),
+        );
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_MENU_EXIT as usize, PCWSTR(exit_w.as_ptr()));
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_EXIT as usize,
+            PCWSTR(exit_w.as_ptr()),
+        );
 
         let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(hmenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, p.x, p.y, 0, hwnd, None);
+        let _ = TrackPopupMenu(
+            hmenu,
+            TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+            p.x,
+            p.y,
+            0,
+            hwnd,
+            None,
+        );
         let _ = DestroyMenu(hmenu);
     }
 }

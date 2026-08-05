@@ -38,7 +38,9 @@ impl LyricsClient {
             }
         }
 
-        if let Ok(res) = fetch_lrclib_lyrics(&self.reqwest_client, title, artist, album, duration).await {
+        if let Ok(res) =
+            fetch_lrclib_lyrics(&self.reqwest_client, title, artist, album, duration).await
+        {
             if let Some(synced) = res.synced {
                 return Ok((synced, res.plain));
             }

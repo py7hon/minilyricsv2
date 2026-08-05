@@ -5,10 +5,10 @@ use windows::Win32::Foundation::{COLORREF, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
     GetTextExtentPoint32W, ModifyWorldTransform, RoundRect, SelectObject, SetBkMode, SetTextColor,
-    SetWorldTransform, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_CHARSET,
-    DEFAULT_PITCH, DRAW_TEXT_FORMAT, DT_LEFT, DT_NOCLIP, DT_NOPREFIX, DT_RIGHT,
-    DT_SINGLELINE, DT_WORDBREAK, DT_WORD_ELLIPSIS, FF_DONTCARE, FW_BOLD, FW_NORMAL, HDC, HGDIOBJ, MWT_IDENTITY,
-    OUT_DEFAULT_PRECIS, PS_SOLID, TRANSPARENT, XFORM,
+    SetWorldTransform, ANTIALIASED_QUALITY, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DRAW_TEXT_FORMAT, DT_LEFT, DT_NOCLIP, DT_NOPREFIX, DT_RIGHT,
+    DT_SINGLELINE, DT_WORDBREAK, DT_WORD_ELLIPSIS, FF_DONTCARE, FW_BOLD, FW_NORMAL, HDC, HGDIOBJ,
+    MWT_IDENTITY, OUT_DEFAULT_PRECIS, PS_SOLID, TRANSPARENT, XFORM,
 };
 
 pub fn get_font_face_for_text(text: &str, default_font: &str) -> String {
@@ -85,15 +85,20 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
             let base_step = cfg.line_spacing * scale;
 
             let mut cursor_y = (8.0 * scale) as i32;
-            let default_face_w: Vec<u16> = format!("{}\0", cfg.font_family).encode_utf16().collect();
+            let default_face_w: Vec<u16> =
+                format!("{}\0", cfg.font_family).encode_utf16().collect();
 
             let lock_status = if s.is_locked { "🔒" } else { "🔓" };
             let mut lock_utf16: Vec<u16> = format!("{}\0", lock_status).encode_utf16().collect();
             let font_lock = CreateFontW(
                 (11.0 * scale) as i32,
-                0, 0, 0,
+                0,
+                0,
+                0,
                 FW_NORMAL.0 as i32,
-                0, 0, 0,
+                0,
+                0,
+                0,
                 DEFAULT_CHARSET.0 as u32,
                 OUT_DEFAULT_PRECIS.0 as u32,
                 CLIP_DEFAULT_PRECIS.0 as u32,
@@ -109,23 +114,35 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                 right: rect.right - 10,
                 bottom: 20,
             };
-            let _ = DrawTextW(mem_dc, &mut lock_utf16, &mut lock_rect, DT_RIGHT | DT_SINGLELINE);
+            let _ = DrawTextW(
+                mem_dc,
+                &mut lock_utf16,
+                &mut lock_rect,
+                DT_RIGHT | DT_SINGLELINE,
+            );
             SelectObject(mem_dc, old_font_lock);
             let _ = DeleteObject(HGDIOBJ(font_lock.0));
 
             if !s.media.title.is_empty() {
                 let title_utf16: Vec<u16> = format!("{}\0", s.media.title).encode_utf16().collect();
-                let artist_utf16: Vec<u16> = format!("{}\0", s.media.artist).encode_utf16().collect();
+                let artist_utf16: Vec<u16> =
+                    format!("{}\0", s.media.artist).encode_utf16().collect();
 
                 let font_size_title_capped = cfg.font_size_title.min(40);
                 let resolved_title_font = get_font_face_for_text(&s.media.title, &cfg.font_family);
-                let title_face_w: Vec<u16> = format!("{}\0", resolved_title_font).encode_utf16().collect();
+                let title_face_w: Vec<u16> = format!("{}\0", resolved_title_font)
+                    .encode_utf16()
+                    .collect();
 
                 let font_title = CreateFontW(
                     font_size_title_capped,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     FW_BOLD.0 as i32,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     DEFAULT_CHARSET.0 as u32,
                     OUT_DEFAULT_PRECIS.0 as u32,
                     CLIP_DEFAULT_PRECIS.0 as u32,
@@ -153,14 +170,21 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                 let _ = DeleteObject(HGDIOBJ(font_title.0));
 
                 let font_size_artist_capped = cfg.font_size_artist.min(40);
-                let resolved_artist_font = get_font_face_for_text(&s.media.artist, &cfg.font_family);
-                let artist_face_w: Vec<u16> = format!("{}\0", resolved_artist_font).encode_utf16().collect();
+                let resolved_artist_font =
+                    get_font_face_for_text(&s.media.artist, &cfg.font_family);
+                let artist_face_w: Vec<u16> = format!("{}\0", resolved_artist_font)
+                    .encode_utf16()
+                    .collect();
 
                 let font_artist = CreateFontW(
                     font_size_artist_capped,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     FW_NORMAL.0 as i32,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     DEFAULT_CHARSET.0 as u32,
                     OUT_DEFAULT_PRECIS.0 as u32,
                     CLIP_DEFAULT_PRECIS.0 as u32,
@@ -211,12 +235,17 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
             } else {
                 line_font_family.clone()
             };
-            let temp_face_w: Vec<u16> = format!("{}\0", temp_resolved_font).encode_utf16().collect();
+            let temp_face_w: Vec<u16> =
+                format!("{}\0", temp_resolved_font).encode_utf16().collect();
             let font_active_measure = CreateFontW(
                 active_font_size,
-                0, 0, 0,
+                0,
+                0,
+                0,
                 FW_BOLD.0 as i32,
-                0, 0, 0,
+                0,
+                0,
+                0,
                 DEFAULT_CHARSET.0 as u32,
                 OUT_DEFAULT_PRECIS.0 as u32,
                 CLIP_DEFAULT_PRECIS.0 as u32,
@@ -247,7 +276,11 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                     cx += syl_width;
                 }
                 active_h = clines * lh;
-                if active_line.sub_text.as_ref().map_or(false, |sub| !sub.is_empty()) {
+                if active_line
+                    .sub_text
+                    .as_ref()
+                    .map_or(false, |sub| !sub.is_empty())
+                {
                     active_h += (cfg.font_size_sub.min(40) * 2) + 16;
                 }
             }
@@ -258,9 +291,14 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
             if s.is_loading {
                 let mut loading_utf16: Vec<u16> = "Loading lyrics...\0".encode_utf16().collect();
                 let font = CreateFontW(
-                    12, 0, 0, 0,
+                    12,
+                    0,
+                    0,
+                    0,
                     FW_NORMAL.0 as i32,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     DEFAULT_CHARSET.0 as u32,
                     OUT_DEFAULT_PRECIS.0 as u32,
                     CLIP_DEFAULT_PRECIS.0 as u32,
@@ -289,7 +327,11 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                         let line_top = if offset <= 0 {
                             (base_center_y + distance_from_float * base_step) as i32
                         } else {
-                            (base_center_y + active_h as f32 + 12.0 + (distance_from_float - 1.0) * base_step) as i32
+                            (base_center_y
+                                + active_h as f32
+                                + 12.0
+                                + (distance_from_float - 1.0) * base_step)
+                                as i32
                         };
 
                         if line_top < header_bottom {
@@ -300,15 +342,21 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                         let is_instrumental = line.text.trim() == "♪"
                             || line.text.to_lowercase().contains("instrumental");
 
-                        let resolved_font_face = get_font_face_for_text(&line.text, &line_font_family);
-                        let line_face_w: Vec<u16> = format!("{}\0", resolved_font_face).encode_utf16().collect();
+                        let resolved_font_face =
+                            get_font_face_for_text(&line.text, &line_font_family);
+                        let line_face_w: Vec<u16> =
+                            format!("{}\0", resolved_font_face).encode_utf16().collect();
 
                         if is_active {
                             let font_base = CreateFontW(
                                 active_font_size,
-                                0, 0, 0,
+                                0,
+                                0,
+                                0,
                                 FW_BOLD.0 as i32,
-                                0, 0, 0,
+                                0,
+                                0,
+                                0,
                                 DEFAULT_CHARSET.0 as u32,
                                 OUT_DEFAULT_PRECIS.0 as u32,
                                 CLIP_DEFAULT_PRECIS.0 as u32,
@@ -350,14 +398,17 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                                     accumulated_syl_time += syl_dur;
 
                                     let syl_progress = if elapsed_line >= syl_start {
-                                        ((elapsed_line - syl_start) as f32 / syl_dur as f32).clamp(0.0, 1.0)
+                                        ((elapsed_line - syl_start) as f32 / syl_dur as f32)
+                                            .clamp(0.0, 1.0)
                                     } else {
                                         0.0
                                     };
 
-                                    let w_utf16_measure: Vec<u16> = syl.text.encode_utf16().collect();
+                                    let w_utf16_measure: Vec<u16> =
+                                        syl.text.encode_utf16().collect();
                                     let mut size = SIZE::default();
-                                    let _ = GetTextExtentPoint32W(mem_dc, &w_utf16_measure, &mut size);
+                                    let _ =
+                                        GetTextExtentPoint32W(mem_dc, &w_utf16_measure, &mut size);
 
                                     let padding = if syl.text.ends_with(' ') { 0 } else { 2 };
                                     let syl_width = size.cx + padding;
@@ -461,17 +512,26 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
 
                                 if let Some(ref sub) = line.sub_text {
                                     if !sub.is_empty() {
-                                        let sub_utf16: Vec<u16> = format!("{}\0", sub).encode_utf16().collect();
+                                        let sub_utf16: Vec<u16> =
+                                            format!("{}\0", sub).encode_utf16().collect();
                                         let font_size_sub_capped = cfg.font_size_sub.min(40);
 
-                                        let resolved_sub_font = get_font_face_for_text(sub, &cfg.font_family);
-                                        let sub_face_w: Vec<u16> = format!("{}\0", resolved_sub_font).encode_utf16().collect();
+                                        let resolved_sub_font =
+                                            get_font_face_for_text(sub, &cfg.font_family);
+                                        let sub_face_w: Vec<u16> =
+                                            format!("{}\0", resolved_sub_font)
+                                                .encode_utf16()
+                                                .collect();
 
                                         let font_sub = CreateFontW(
                                             font_size_sub_capped,
-                                            0, 0, 0,
+                                            0,
+                                            0,
+                                            0,
                                             FW_NORMAL.0 as i32,
-                                            0, 0, 0,
+                                            0,
+                                            0,
+                                            0,
                                             DEFAULT_CHARSET.0 as u32,
                                             OUT_DEFAULT_PRECIS.0 as u32,
                                             CLIP_DEFAULT_PRECIS.0 as u32,
@@ -479,7 +539,8 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                                             (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
                                             PCWSTR(sub_face_w.as_ptr()),
                                         );
-                                        let old_font_sub = SelectObject(mem_dc, HGDIOBJ(font_sub.0));
+                                        let old_font_sub =
+                                            SelectObject(mem_dc, HGDIOBJ(font_sub.0));
 
                                         let sub_x = 15;
                                         let sub_y = line_top + total_box_height + 2;
@@ -506,17 +567,24 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                             let _ = DeleteObject(HGDIOBJ(font_base.0));
                         } else {
                             let display_text = line.text.clone();
-                            let line_utf16: Vec<u16> = format!("{}\0", display_text).encode_utf16().collect();
+                            let line_utf16: Vec<u16> =
+                                format!("{}\0", display_text).encode_utf16().collect();
                             let font_size_side_capped = cfg.font_size_side.min(40);
 
-                            let resolved_side_font = get_font_face_for_text(&display_text, &cfg.font_family);
-                            let side_face_w: Vec<u16> = format!("{}\0", resolved_side_font).encode_utf16().collect();
+                            let resolved_side_font =
+                                get_font_face_for_text(&display_text, &cfg.font_family);
+                            let side_face_w: Vec<u16> =
+                                format!("{}\0", resolved_side_font).encode_utf16().collect();
 
                             let font_side = CreateFontW(
                                 font_size_side_capped,
-                                0, 0, 0,
+                                0,
+                                0,
+                                0,
                                 FW_NORMAL.0 as i32,
-                                0, 0, 0,
+                                0,
+                                0,
+                                0,
                                 DEFAULT_CHARSET.0 as u32,
                                 OUT_DEFAULT_PRECIS.0 as u32,
                                 CLIP_DEFAULT_PRECIS.0 as u32,
@@ -554,11 +622,17 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                     }
                 }
             } else {
-                let mut idle_utf16: Vec<u16> = "Play music to see lyrics...\0".encode_utf16().collect();
+                let mut idle_utf16: Vec<u16> =
+                    "Play music to see lyrics...\0".encode_utf16().collect();
                 let font = CreateFontW(
-                    12, 0, 0, 0,
+                    12,
+                    0,
+                    0,
+                    0,
                     FW_NORMAL.0 as i32,
-                    0, 0, 0,
+                    0,
+                    0,
+                    0,
                     DEFAULT_CHARSET.0 as u32,
                     OUT_DEFAULT_PRECIS.0 as u32,
                     CLIP_DEFAULT_PRECIS.0 as u32,

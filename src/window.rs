@@ -1,27 +1,33 @@
 use crate::app_state::{APP_STATE, PAINT_CACHE};
 use crate::render::render_window;
 use crate::tray::{
-    add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT,
-    ID_MENU_LOCK, ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET,
-    ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, WM_TRAYICON,
+    add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT, ID_MENU_LOCK,
+    ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SIZE_LARGE,
+    ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, WM_TRAYICON,
 };
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, EndPaint,
-    SelectObject, SetGraphicsMode, BitBlt, GM_ADVANCED, HGDIOBJ, PAINTSTRUCT, ScreenToClient, SRCCOPY,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+    EndPaint, ScreenToClient, SelectObject, SetGraphicsMode, GM_ADVANCED, HGDIOBJ, PAINTSTRUCT,
+    SRCCOPY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer,
-    SetWindowPos, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, IDC_ARROW,
-    LWA_COLORKEY, MSG, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_COMMAND, WM_CREATE, WM_DESTROY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowPos,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, IDC_ARROW, LWA_COLORKEY, MSG,
+    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-pub unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+pub unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             SetTimer(hwnd, 1, 16, None);
@@ -221,7 +227,8 @@ pub fn create_main_window() -> HWND {
             None,
             instance,
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x000000), 255, LWA_COLORKEY);
         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, SW_SHOW);
