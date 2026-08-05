@@ -85,11 +85,11 @@ pub async fn fetch_lrclib_lyrics(
         let t_match = item
             .track_name
             .as_ref()
-            .map_or(false, |t| t.to_lowercase().contains(&title_lower));
+            .is_some_and(|t| t.to_lowercase().contains(&title_lower));
         let a_match = item
             .artist_name
             .as_ref()
-            .map_or(false, |a| a.to_lowercase().contains(&artist_lower));
+            .is_some_and(|a| a.to_lowercase().contains(&artist_lower));
 
         if t_match || a_match {
             let synced = item.synced_lyrics.filter(|s| !s.trim().is_empty());

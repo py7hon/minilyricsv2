@@ -3,7 +3,7 @@ use serde_json::Value;
 
 pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
     let clean = text.trim();
-    if clean.is_empty() || clean == "♪" || clean.chars().all(|c| c.is_ascii()) {
+    if clean.is_empty() || clean == "♪" || clean.is_ascii() {
         return None;
     }
 
@@ -56,7 +56,7 @@ pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
         for item in arr {
             if let Some(item_arr) = item.as_array() {
                 if let Some(p) = item_arr
-                    .get(0)
+                    .first()
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                 {

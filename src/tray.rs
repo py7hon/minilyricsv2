@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use crate::app_state::APP_STATE;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, POINT};
@@ -25,29 +26,31 @@ pub const ID_MENU_EXIT: u32 = 2002;
 
 pub fn add_tray_icon(hwnd: HWND) {
     unsafe {
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = ID_TRAY_ICON;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIconW(None, IDI_INFORMATION).unwrap_or_default();
-
         let tip: Vec<u16> = "Mini Lyric v2 (Right-click for Menu)\0"
             .encode_utf16()
             .collect();
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: ID_TRAY_ICON,
+            uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+            uCallbackMessage: WM_TRAYICON,
+            hIcon: LoadIconW(None, IDI_INFORMATION).unwrap_or_default(),
+            ..Default::default()
+        };
         nid.szTip[..tip.len()].copy_from_slice(&tip);
-
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
     }
 }
 
 pub fn remove_tray_icon(hwnd: HWND) {
     unsafe {
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        nid.hWnd = hwnd;
-        nid.uID = ID_TRAY_ICON;
+        let nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: ID_TRAY_ICON,
+            ..Default::default()
+        };
         let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
     }
 }

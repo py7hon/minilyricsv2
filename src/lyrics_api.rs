@@ -2,7 +2,7 @@ use crate::providers::amll::fetch_amll_lyrics;
 use crate::providers::lrclib::fetch_lrclib_lyrics;
 use crate::providers::netease::fetch_netease_lyrics;
 use crate::providers::translation::translate_text;
-use crate::providers::ttmllib::{fetch_ttmllib_lyrics, LyricsResult};
+use crate::providers::ttmllib::fetch_ttmllib_lyrics;
 use reqwest::Client;
 use std::time::Duration;
 

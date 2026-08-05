@@ -45,7 +45,7 @@ async fn main() {
         APP_STATE = Some(app_state.clone());
     }
 
-    let hwnd = create_main_window();
+    let _hwnd = create_main_window();
 
     let state_clone = app_state.clone();
     let media_handle_clone = media_handle.clone();
@@ -129,7 +129,7 @@ async fn main() {
             }
 
             if request_fetch {
-                let dur = (fetch_dur > 0).then(|| fetch_dur / 1000);
+                let dur = (fetch_dur > 0).then_some(fetch_dur / 1000);
                 let result = lyrics_client
                     .fetch_lyrics(&fetch_title, &fetch_artist, &fetch_album, dur)
                     .await;
@@ -140,10 +140,7 @@ async fn main() {
 
                         for line in &mut parsed_lines {
                             if line.sub_text.is_none()
-                                || line
-                                    .sub_text
-                                    .as_ref()
-                                    .map_or(true, |st| st.trim().is_empty())
+                                || line.sub_text.as_ref().is_none_or(|st| st.trim().is_empty())
                             {
                                 if let Some(trans) = lyrics_client.translate_text(&line.text).await
                                 {

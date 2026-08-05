@@ -13,6 +13,7 @@ pub struct LrcLine {
     pub text: String,
     pub syllables: Vec<Syllable>,
     pub sub_text: Option<String>,
+    #[allow(dead_code)]
     pub style_name: String,
 }
 
@@ -81,7 +82,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                 .map(|s| s.text.chars().count())
                 .sum();
             if total_chars > 0 {
-                let max_realistic_ms = (total_chars as u64 * 150).max(1500).min(5000);
+                let max_realistic_ms = (total_chars as u64 * 150).clamp(1500, 5000);
                 let effective_ms = line_duration_ms.min(max_realistic_ms);
 
                 for syl in lines[i].syllables.iter_mut() {
@@ -123,10 +124,10 @@ fn parse_lrc_time_str(s: &str) -> Option<Duration> {
 // Fungsi helper untuk mendeteksi karakter CJK (China, Jepang, Korea)
 fn is_cjk(c: char) -> bool {
     let u = c as u32;
-    (u >= 0x4E00 && u <= 0x9FFF) || // CJK Unified Ideographs (Hanzi / Kanji)
-    (u >= 0x3040 && u <= 0x309F) || // Hiragana
-    (u >= 0x30A0 && u <= 0x30FF) || // Katakana
-    (u >= 0xAC00 && u <= 0xD7AF) // Hangul (Korea)
+    (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs (Hanzi / Kanji)
+    (0x3040..=0x309F).contains(&u) || // Hiragana
+    (0x30A0..=0x30FF).contains(&u) || // Katakana
+    (0xAC00..=0xD7AF).contains(&u) // Hangul (Korea)
 }
 
 fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {

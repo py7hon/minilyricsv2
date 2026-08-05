@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use crate::app_state::APP_STATE;
 use crate::config::hex_to_colorref;
 use windows::core::PCWSTR;
@@ -14,10 +15,10 @@ use windows::Win32::Graphics::Gdi::{
 pub fn get_font_face_for_text(text: &str, default_font: &str) -> String {
     let has_cjk = text.chars().any(|c| {
         let u = c as u32;
-        (u >= 0x4E00 && u <= 0x9FFF)
-            || (u >= 0x3040 && u <= 0x309F)
-            || (u >= 0x30A0 && u <= 0x30FF)
-            || (u >= 0xAC00 && u <= 0xD7AF)
+        (0x4E00..=0x9FFF).contains(&u)
+            || (0x3040..=0x309F).contains(&u)
+            || (0x30A0..=0x30FF).contains(&u)
+            || (0xAC00..=0xD7AF).contains(&u)
     });
 
     if has_cjk {
@@ -279,7 +280,7 @@ pub unsafe fn render_window(mem_dc: HDC, rect: RECT) {
                 if active_line
                     .sub_text
                     .as_ref()
-                    .map_or(false, |sub| !sub.is_empty())
+                    .is_some_and(|sub| !sub.is_empty())
                 {
                     active_h += (cfg.font_size_sub.min(40) * 2) + 16;
                 }

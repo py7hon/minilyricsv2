@@ -1,3 +1,4 @@
+#![allow(static_mut_refs)]
 use crate::app_state::{APP_STATE, PAINT_CACHE};
 use crate::render::render_window;
 use crate::tray::{
@@ -64,7 +65,7 @@ pub unsafe extern "system" fn wnd_proc(
             let x = (lparam.0 & 0xFFFF) as i16 as i32;
             let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
 
-            if x >= rect.right - 35 && x <= rect.right - 10 && y >= 4 && y <= 24 {
+            if x >= rect.right - 35 && x <= rect.right - 10 && (4..=24).contains(&y) {
                 toggle_lock_state(hwnd);
             }
             LRESULT(0)

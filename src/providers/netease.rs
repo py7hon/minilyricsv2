@@ -27,6 +27,7 @@ struct NeteaseLrcDetail {
     lyric: Option<String>,
 }
 
+#[allow(dead_code)]
 pub fn parse_ttml_time_ms(s: &str) -> Option<u64> {
     let s = s.trim().trim_end_matches('s');
     let parts: Vec<&str> = s.split(':').collect();
@@ -48,6 +49,7 @@ pub fn parse_ttml_time_ms(s: &str) -> Option<u64> {
     Some((total_secs * 1000.0).round() as u64)
 }
 
+#[allow(dead_code)]
 pub fn clean_xml_text(raw: &str) -> String {
     let mut clean_text = String::new();
     let mut in_tag = false;
@@ -69,6 +71,7 @@ pub fn clean_xml_text(raw: &str) -> String {
         .replace("&gt;", ">")
 }
 
+#[allow(dead_code)]
 pub fn ttml_to_lrc(ttml_content: &str) -> Option<String> {
     let mut lrc_lines = Vec::new();
     let mut search_idx = 0;
