@@ -3,6 +3,8 @@
 > **A modern, lightweight, transparent floating lyrics overlay for Windows.**  
 > Powered by Rust, Win32 GDI, Windows System Media Transport Controls (GSMTC), and multi-source TTML/LRC providers.
 
+<img width="1680" height="894" alt="image" src="https://github.com/user-attachments/assets/df010561-35db-4487-bf44-524d91241e5c" />
+
 ---
 
 ## 🌟 Key Features
@@ -33,7 +35,7 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/user/minilyricv2.git
+git clone https://github.com/py7hon/minilyricv2.git
 cd minilyricv2
 
 # Build debug binary
@@ -86,4 +88,4 @@ show_card = false
 
 ## 📄 License
 
-Distributed under the [MIT License](file:///d:/projj/minilyricv2/LICENSE). See `LICENSE` for details.
+Distributed under the MIT License. See `LICENSE` for details.
