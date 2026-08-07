@@ -1,7 +1,8 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_state;
 mod config;
+mod d2d_engine;
 mod gsmtc;
 mod lrc_parser;
 mod lyrics_api;
@@ -10,13 +11,13 @@ mod render;
 mod tray;
 mod window;
 
-use app_state::{AppState, APP_STATE};
-use config::load_or_create_config;
-use gsmtc::spawn_media_monitor;
-use lyrics_api::LyricsClient;
+use crate::app_state::{AppState, APP_STATE};
+use crate::config::load_or_create_config;
+use crate::gsmtc::spawn_media_monitor;
+use crate::lyrics_api::LyricsClient;
+use crate::window::{create_main_window, run_event_loop};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use window::{create_main_window, run_event_loop};
 
 #[tokio::main]
 async fn main() {
@@ -24,21 +25,21 @@ async fn main() {
     let media_handle = spawn_media_monitor();
     let lyrics_client = LyricsClient::new();
 
-    let initial_offset = config.offset_ms;
-
     let app_state = Arc::new(Mutex::new(AppState {
-        media: gsmtc::MediaInfo::default(),
+        media: Default::default(),
         lyrics_lines: Vec::new(),
         plain_lines: Vec::new(),
         current_index: 0,
         plain_lyrics: None,
+        provider_name: None,
         is_loading: false,
-        offset_ms: initial_offset,
+        offset_ms: 0,
         is_locked: false,
         float_index: 0.0,
         config,
         last_pos_ms: 0,
         last_pos_update: Instant::now(),
+        layout_cache_dirty: false,
     }));
 
     unsafe {
@@ -54,7 +55,7 @@ async fn main() {
         let mut current_title = String::new();
         let mut current_artist = String::new();
         let mut current_album = String::new();
-        let mut ticker = tokio::time::interval(Duration::from_millis(50));
+        let mut ticker = tokio::time::interval(Duration::from_millis(30));
 
         loop {
             ticker.tick().await;
@@ -80,17 +81,16 @@ async fn main() {
                     current_artist = media.artist.clone();
                     current_album = media.album.clone();
 
+                    s.layout_cache_dirty = true;
+
                     s.media = media.clone();
                     s.is_loading = !media.title.is_empty();
                     s.lyrics_lines.clear();
                     s.plain_lines.clear();
                     s.current_index = 0;
                     s.plain_lyrics = None;
-                    s.last_pos_ms = if media.position_ms > 0 {
-                        media.position_ms
-                    } else {
-                        0
-                    };
+                    s.provider_name = None;
+                    s.last_pos_ms = media.position_ms;
                     s.last_pos_update = Instant::now();
 
                     request_fetch = true;
@@ -100,19 +100,12 @@ async fn main() {
                     fetch_dur = media.duration_ms;
                 } else {
                     let active_playing = media.is_playing || !media.title.is_empty();
-
-                    if media.position_ms > 0 && media.position_ms != s.media.position_ms {
+                    if media.position_ms > 0 {
                         s.media.position_ms = media.position_ms;
-                        s.last_pos_ms = media.position_ms;
-                        s.last_pos_update = Instant::now();
                     }
                     s.media.is_playing = active_playing;
 
-                    let real_pos = if s.media.is_playing {
-                        s.last_pos_ms + s.last_pos_update.elapsed().as_millis() as u64
-                    } else {
-                        s.last_pos_ms
-                    };
+                    let real_pos = s.media.position_ms;
                     let adjusted_ms = (real_pos as i64 + s.offset_ms).max(0) as u64;
 
                     let new_index = if s.lyrics_lines.is_empty() {
@@ -135,7 +128,7 @@ async fn main() {
                     .await;
 
                 match result {
-                    Ok((ttml_raw, plain_opt)) => {
+                    Ok((ttml_raw, plain_opt, provider)) => {
                         let mut parsed_lines = lrc_parser::parse_lrc(&ttml_raw);
 
                         for line in &mut parsed_lines {
@@ -153,11 +146,13 @@ async fn main() {
                             s.is_loading = false;
                             s.lyrics_lines = parsed_lines;
                             s.plain_lyrics = plain_opt;
+                            s.provider_name = Some(provider);
                         }
                     }
                     Err(e) => {
                         if let Ok(mut s) = state_clone.lock() {
                             s.is_loading = false;
+                            s.provider_name = None;
                         }
                         println!("[Main] Lyrics error: {}", e);
                     }

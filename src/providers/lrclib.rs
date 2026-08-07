@@ -1,3 +1,4 @@
+use crate::providers::http_debug::http_get_with_debug;
 use crate::providers::ttmllib::LyricsResult;
 use reqwest::Client;
 use serde::Deserialize;
@@ -41,21 +42,12 @@ pub async fn fetch_lrclib_lyrics(
         url.push_str(&format!("&duration={}", dur));
     }
 
-    let res = client
-        .get(&url)
-        .header("User-Agent", "MiniLyric/2.0")
-        .timeout(std::time::Duration::from_secs(4))
-        .send()
-        .await;
-
-    if let Ok(resp) = res {
-        if resp.status().is_success() {
-            if let Ok(data) = resp.json::<LrclibResponse>().await {
-                let synced = data.synced_lyrics.filter(|s| !s.trim().is_empty());
-                let plain = data.plain_lyrics.filter(|s| !s.trim().is_empty());
-                if synced.is_some() || plain.is_some() {
-                    return Ok(LyricsResult { synced, plain });
-                }
+    if let Ok(text) = http_get_with_debug(client, &url, "LRCLIB").await {
+        if let Ok(data) = serde_json::from_str::<LrclibResponse>(&text) {
+            let synced = data.synced_lyrics.filter(|s| !s.trim().is_empty());
+            let plain = data.plain_lyrics.filter(|s| !s.trim().is_empty());
+            if synced.is_some() || plain.is_some() {
+                return Ok(LyricsResult { synced, plain });
             }
         }
     }
@@ -66,18 +58,9 @@ pub async fn fetch_lrclib_lyrics(
         urlencoding::encode(&search_q)
     );
 
-    let search_resp = client
-        .get(&search_url)
-        .header("User-Agent", "MiniLyric/2.0")
-        .timeout(std::time::Duration::from_secs(4))
-        .send()
-        .await?;
+    let search_body = http_get_with_debug(client, &search_url, "LRCLIB Search").await?;
+    let results: Vec<LrclibSearchResult> = serde_json::from_str(&search_body)?;
 
-    if !search_resp.status().is_success() {
-        return Err("LRCLIB search non-ok status".into());
-    }
-
-    let results: Vec<LrclibSearchResult> = search_resp.json().await?;
     let title_lower = title.to_lowercase();
     let artist_lower = artist.to_lowercase();
 

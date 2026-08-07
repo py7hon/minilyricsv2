@@ -16,14 +16,10 @@ pub struct MediaInfo {
     pub is_playing: bool,
 }
 
-// Menghitung tick internal Windows untuk interpolasi waktu
 fn get_current_windows_ticks() -> i64 {
-    if let Ok(duration) =
-        std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)
-    {
-        let secs_ticks = duration.as_secs() as i64 * 10_000_000;
-        let subsec_ticks = (duration.subsec_nanos() / 100) as i64;
-        secs_ticks + subsec_ticks + 116_444_736_000_000_000
+    let now = std::time::SystemTime::now();
+    if let Ok(duration) = now.duration_since(std::time::UNIX_EPOCH) {
+        (duration.as_nanos() / 100) as i64 + 116444736000000000
     } else {
         0
     }
@@ -56,7 +52,6 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
 
             if let Some(ref manager) = manager_opt {
                 if let Ok(session) = manager.GetCurrentSession() {
-                    // Cek metadata judul & artis maksimal 1 kali per detik (1000ms) untuk menghemat CPU
                     if last_prop_check.elapsed().as_millis() > 1000 {
                         last_prop_check = tokio::time::Instant::now();
                         if let Ok(properties_async) = session.TryGetMediaPropertiesAsync() {
@@ -75,7 +70,6 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                         }
                     }
 
-                    // Cek Timeline setiap 40ms untuk presisi sinkronisasi yang tinggi
                     let mut position_ms = 0u64;
                     let mut is_playing = false;
 
@@ -101,7 +95,6 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                                 if let Ok(last_updated) = timeline.LastUpdatedTime() {
                                     let now_ticks = get_current_windows_ticks();
                                     let elapsed_ticks = now_ticks - last_updated.UniversalTime;
-                                    // Interpolasi tick manual
                                     if elapsed_ticks > 0 && elapsed_ticks < 86_400_000_000_000 {
                                         base_ms + (elapsed_ticks / 10_000) as u64
                                     } else {
@@ -125,12 +118,6 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                         info.is_playing = is_playing;
                     }
                 } else {
-                    // PENTING: GetCurrentSession() gagal cuma berarti "gak ada media
-                    // aktif sekarang" - BUKAN berarti manager-nya invalid. Manager
-                    // di-reuse selamanya sekali berhasil didapat; kalau di-set None
-                    // di sini, tiap 40ms bakal minta ulang RequestAsync() (blocking
-                    // .get() di runtime current-thread) selama gak ada media sama
-                    // sekali, bikin CPU nyala terus-terusan tanpa alasan.
                     current_title.clear();
                     current_artist.clear();
                     current_album.clear();
@@ -140,8 +127,7 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                     }
                 }
             }
-            // Loop persis di angka 40ms seperti fungsi native-mu
-            sleep(Duration::from_millis(40)).await;
+            sleep(Duration::from_millis(0)).await;
         }
     });
 

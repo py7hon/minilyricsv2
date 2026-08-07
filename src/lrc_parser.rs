@@ -17,47 +17,250 @@ pub struct LrcLine {
     pub style_name: String,
 }
 
-pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
-    let mut lines = Vec::new();
+fn parse_ttml_time_str(s: &str) -> Option<Duration> {
+    let s = s.trim().trim_matches('"').trim_matches('\'');
+    if s.is_empty() {
+        return None;
+    }
 
-    for raw_line in content.lines() {
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('#') {
-            continue;
+    if s.ends_with('s') {
+        let secs_str = &s[..s.len() - 1];
+        let secs_f: f64 = secs_str.parse().ok()?;
+        return Some(Duration::from_secs_f64(secs_f));
+    }
+
+    if s.ends_with("ms") {
+        let ms_str = &s[..s.len() - 2];
+        let ms: u64 = ms_str.parse().ok()?;
+        return Some(Duration::from_millis(ms));
+    }
+
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() == 3 {
+        let hours: u64 = parts[0].parse().ok()?;
+        let mins: u64 = parts[1].parse().ok()?;
+        let secs_f: f64 = parts[2].parse().ok()?;
+        let total_ms = (hours * 3600 + mins * 60) * 1000 + (secs_f * 1000.0) as u64;
+        Some(Duration::from_millis(total_ms))
+    } else if parts.len() == 2 {
+        let mins: u64 = parts[0].parse().ok()?;
+        let secs_f: f64 = parts[1].parse().ok()?;
+        let total_ms = mins * 60000 + (secs_f * 1000.0) as u64;
+        Some(Duration::from_millis(total_ms))
+    } else {
+        let secs_f: f64 = s.parse().ok()?;
+        Some(Duration::from_secs_f64(secs_f))
+    }
+}
+
+fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
+    let pattern = format!("{}=\"", attr);
+    if let Some(idx) = tag.find(&pattern) {
+        let start = idx + pattern.len();
+        if let Some(end) = tag[start..].find('"') {
+            return Some(tag[start..start + end].to_string());
+        }
+    }
+    let pattern_single = format!("{}='", attr);
+    if let Some(idx) = tag.find(&pattern_single) {
+        let start = idx + pattern_single.len();
+        if let Some(end) = tag[start..].find('\'') {
+            return Some(tag[start..start + end].to_string());
+        }
+    }
+    None
+}
+
+fn strip_xml_tags(input: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in input.chars() {
+        if ch == '<' {
+            in_tag = true;
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
+    let mut lines = Vec::new();
+    let mut pos = 0;
+
+    while let Some(p_start) = content[pos..].find("<p") {
+        let abs_p_start = pos + p_start;
+        let p_end = match content[abs_p_start..].find("</p>") {
+            Some(e) => abs_p_start + e + 4,
+            None => break,
+        };
+
+        let p_block = &content[abs_p_start..p_end];
+        pos = p_end;
+
+        let begin_val = extract_xml_attr(p_block, "begin");
+        let end_val = extract_xml_attr(p_block, "end");
+
+        let p_begin = match begin_val.as_deref().and_then(parse_ttml_time_str) {
+            Some(t) => t,
+            None => continue,
+        };
+        let p_end_time = end_val.as_deref().and_then(parse_ttml_time_str);
+
+        let mut syllables = Vec::new();
+        let mut full_text = String::new();
+
+        let mut span_pos = 0;
+        while let Some(s_start) = p_block[span_pos..].find("<span") {
+            let abs_s_start = span_pos + s_start;
+            let s_close_tag = match p_block[abs_s_start..].find('>') {
+                Some(c) => abs_s_start + c + 1,
+                None => break,
+            };
+            let s_end = match p_block[s_close_tag..].find("</span>") {
+                Some(e) => s_close_tag + e,
+                None => break,
+            };
+
+            let tag_attrs = &p_block[abs_s_start..s_close_tag];
+            let span_text_raw = &p_block[s_close_tag..s_end];
+            span_pos = s_end + 7;
+
+            let mut span_text = strip_xml_tags(span_text_raw);
+            if span_text.is_empty() {
+                continue;
+            }
+
+            let after_span = &p_block[s_end + 7..];
+            let has_outside_space = after_span.starts_with(' ')
+                || after_span.starts_with('\n')
+                || after_span.starts_with('\r')
+                || after_span.starts_with('\t');
+
+            if has_outside_space && !span_text.ends_with(' ') {
+                span_text.push(' ');
+            }
+
+            let s_begin = extract_xml_attr(tag_attrs, "begin")
+                .as_deref()
+                .and_then(parse_ttml_time_str);
+            let s_end_t = extract_xml_attr(tag_attrs, "end")
+                .as_deref()
+                .and_then(parse_ttml_time_str);
+
+            let dur = if let (Some(b), Some(e)) = (s_begin, s_end_t) {
+                e.saturating_sub(b)
+            } else {
+                Duration::from_millis(300)
+            };
+
+            syllables.push(Syllable {
+                text: span_text.clone(),
+                duration: dur,
+            });
+            full_text.push_str(&span_text);
         }
 
-        if trimmed.starts_with('[') {
-            if let Some(close_idx) = trimmed.find(']') {
-                let time_str = &trimmed[1..close_idx];
-                let mut raw_text = trimmed[close_idx + 1..].trim();
+        if syllables.is_empty() {
+            let raw_inner = strip_xml_tags(p_block);
+            if !raw_inner.trim().is_empty() {
+                let (syls, plain) = parse_api_karaoke(&raw_inner);
+                syllables = syls;
+                full_text = plain;
+            }
+        }
 
-                let mut sub_text = None;
-                if let Some(sub_idx) = raw_text.find("|sub:") {
-                    let sub_part = &raw_text[sub_idx + 5..];
-                    if !sub_part.trim().is_empty() {
-                        sub_text = Some(sub_part.trim().to_string());
+        if !full_text.trim().is_empty() {
+            lines.push(LrcLine {
+                time: p_begin,
+                end_time: p_end_time,
+                text: full_text.trim().to_string(),
+                syllables,
+                sub_text: None,
+                style_name: "Default".to_string(),
+            });
+        }
+    }
+
+    lines.sort_by_key(|l| l.time);
+
+    lines
+}
+
+pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
+    let trimmed = content.trim();
+    let mut raw_lines =
+        if trimmed.contains("<tt") || trimmed.contains("<p") || trimmed.contains("xmlns=") {
+            let ttml_lines = parse_ttml(content);
+            if !ttml_lines.is_empty() {
+                ttml_lines
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+    if raw_lines.is_empty() {
+        for raw_line in content.lines() {
+            let trimmed_line = raw_line.trim();
+            if trimmed_line.is_empty()
+                || trimmed_line.starts_with(';')
+                || trimmed_line.starts_with('#')
+            {
+                continue;
+            }
+
+            if trimmed_line.starts_with('[') {
+                if let Some(close_idx) = trimmed_line.find(']') {
+                    let time_str = &trimmed_line[1..close_idx];
+                    let mut raw_text = trimmed_line[close_idx + 1..].trim();
+
+                    let mut sub_text = None;
+                    if let Some(sub_idx) = raw_text.find("|sub:") {
+                        let sub_part = &raw_text[sub_idx + 5..];
+                        if !sub_part.trim().is_empty() {
+                            sub_text = Some(sub_part.trim().to_string());
+                        }
+                        raw_text = raw_text[..sub_idx].trim();
                     }
-                    raw_text = raw_text[..sub_idx].trim();
-                }
 
-                if let Some(base_time) = parse_lrc_time_str(time_str) {
-                    let (syllables, plain_text) = parse_api_karaoke(raw_text);
-                    if !plain_text.is_empty() {
-                        lines.push(LrcLine {
-                            time: base_time,
-                            end_time: None,
-                            text: plain_text,
-                            syllables,
-                            sub_text,
-                            style_name: "Default".to_string(),
-                        });
+                    if let Some(base_time) = parse_lrc_time_str(time_str) {
+                        let (syllables, plain_text) = parse_api_karaoke(raw_text);
+                        if !plain_text.is_empty() {
+                            raw_lines.push(LrcLine {
+                                time: base_time,
+                                end_time: None,
+                                text: plain_text,
+                                syllables,
+                                sub_text,
+                                style_name: "Default".to_string(),
+                            });
+                        }
                     }
                 }
             }
         }
     }
 
-    lines.sort_by_key(|l| l.time);
+    raw_lines.sort_by_key(|l| l.time);
+
+    // Merge dual-line lyrics (main lyric + translation sharing same/near timestamp)
+    let mut lines: Vec<LrcLine> = Vec::new();
+    for line in raw_lines {
+        if let Some(last) = lines.last_mut() {
+            let diff = line.time.saturating_sub(last.time).as_millis();
+            if diff <= 150 {
+                if last.sub_text.is_none() {
+                    last.sub_text = Some(line.text);
+                }
+                continue;
+            }
+        }
+        lines.push(line);
+    }
 
     for i in 0..lines.len() {
         if lines[i].end_time.is_none() && i + 1 < lines.len() {
@@ -82,8 +285,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                 .map(|s| s.text.chars().count())
                 .sum();
             if total_chars > 0 {
-                let max_realistic_ms = (total_chars as u64 * 150).clamp(1500, 5000);
-                let effective_ms = line_duration_ms.min(max_realistic_ms);
+                let effective_ms = line_duration_ms.clamp(500, 15000);
 
                 for syl in lines[i].syllables.iter_mut() {
                     let char_count = syl.text.chars().count() as u64;
@@ -121,13 +323,12 @@ fn parse_lrc_time_str(s: &str) -> Option<Duration> {
     }
 }
 
-// Fungsi helper untuk mendeteksi karakter CJK (China, Jepang, Korea)
 fn is_cjk(c: char) -> bool {
     let u = c as u32;
-    (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs (Hanzi / Kanji)
+    (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs
     (0x3040..=0x309F).contains(&u) || // Hiragana
     (0x30A0..=0x30FF).contains(&u) || // Katakana
-    (0xAC00..=0xD7AF).contains(&u) // Hangul (Korea)
+    (0xAC00..=0xD7AF).contains(&u) // Hangul
 }
 
 fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
@@ -135,7 +336,6 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
     let mut plain_text = String::new();
 
     if input.contains('<') && input.contains('>') {
-        // Mode Lirik Sinkronisasi Tingkat Lanjut (TTML / Musixmatch Custom)
         let mut current_text = String::new();
         let mut in_duration = false;
         let mut dur_str = String::new();
@@ -171,11 +371,9 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
             plain_text.push_str(&current_text);
         }
     } else {
-        // Mode LRC Polos Biasa (Memerlukan pemisahan manual)
         let mut current_word = String::new();
         for ch in input.chars() {
             if is_cjk(ch) {
-                // Jika karakter saat ini adalah CJK, simpan huruf sebelumnya (jika ada huruf latin)
                 if !current_word.is_empty() {
                     syllables.push(Syllable {
                         text: current_word.clone(),
@@ -184,14 +382,12 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
                     plain_text.push_str(&current_word);
                     current_word.clear();
                 }
-                // Paksa pemisahan karakter: 1 Huruf CJK = 1 Suku Kata Animasi
                 syllables.push(Syllable {
                     text: ch.to_string(),
                     duration: Duration::from_millis(300),
                 });
                 plain_text.push(ch);
             } else {
-                // Untuk karakter latin, kumpulkan huruf hingga bertemu spasi
                 current_word.push(ch);
                 if ch.is_whitespace() {
                     syllables.push(Syllable {

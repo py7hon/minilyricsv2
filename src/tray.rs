@@ -110,12 +110,13 @@ pub fn show_tray_menu(hwnd: HWND) {
         let med_w: Vec<u16> = "Size: Normal (560x200)\0".encode_utf16().collect();
         let large_w: Vec<u16> = "Size: Large (680x240)\0".encode_utf16().collect();
 
+        let offset_secs = current_offset as f32 / 1000.0;
         let offset_plus_w: Vec<u16> =
-            format!("Sync: Faster (+500ms) [Current: {}ms]\0", current_offset)
+            format!("Sync: Faster (+100ms) [Current: {:.1}s]\0", offset_secs)
                 .encode_utf16()
                 .collect();
-        let offset_minus_w: Vec<u16> = "Sync: Slower (-500ms)\0".encode_utf16().collect();
-        let offset_reset_w: Vec<u16> = "Sync: Reset Offset (0ms)\0".encode_utf16().collect();
+        let offset_minus_w: Vec<u16> = "Sync: Slower (-100ms)\0".encode_utf16().collect();
+        let offset_reset_w: Vec<u16> = "Sync: Reset Offset (0.0s)\0".encode_utf16().collect();
         let exit_w: Vec<u16> = "Exit Mini Lyric\0".encode_utf16().collect();
 
         let _ = AppendMenuW(

@@ -1,27 +1,52 @@
 #![allow(static_mut_refs)]
-use crate::app_state::{APP_STATE, PAINT_CACHE};
-use crate::render::render_window;
+use crate::app_state::APP_STATE;
+use crate::d2d_engine::get_d2d_engine;
+use crate::render::render_window_d2d;
 use crate::tray::{
     add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT, ID_MENU_LOCK,
     ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SIZE_LARGE,
     ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, WM_TRAYICON,
 };
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::core::{Interface, PCWSTR};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-    EndPaint, ScreenToClient, SelectObject, SetGraphicsMode, GM_ADVANCED, HGDIOBJ, PAINTSTRUCT,
-    SRCCOPY,
+    BeginPaint, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint,
+    InvalidateRect, ScreenToClient, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    LoadCursorW, RegisterClassW, SetLayeredWindowAttributes, SetTimer, SetWindowPos,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, IDC_ARROW, LWA_COLORKEY, MSG,
-    SWP_NOMOVE, SWP_NOZORDER, SW_SHOW, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    LoadCursorW, RegisterClassW, SetTimer, SetWindowPos, TranslateMessage, UpdateLayeredWindow,
+    CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, IDC_ARROW, MSG, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW,
+    ULW_ALPHA, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCHITTEST,
+    WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
+
+struct SurfaceCache {
+    dc: HDC,
+    hbmp: HBITMAP,
+    old_bmp: HGDIOBJ,
+    target: ID2D1RenderTarget,
+    width: i32,
+    height: i32,
+}
+
+impl SurfaceCache {
+    pub unsafe fn release(&mut self) {
+        let _ = SelectObject(self.dc, self.old_bmp);
+        let _ = DeleteObject(HGDIOBJ(self.hbmp.0));
+        let _ = DeleteDC(self.dc);
+    }
+}
+
+static mut SURFACE_CACHE: Option<SurfaceCache> = None;
+// Tracks what we last actually painted, so WM_TIMER can skip invalidating
+// (and therefore skip the expensive UpdateLayeredWindow composite) when
+// nothing on screen would actually change this tick.
+static mut LAST_PAINTED_INDEX: usize = usize::MAX;
 
 pub unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
@@ -31,7 +56,9 @@ pub unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
-            SetTimer(hwnd, 1, 16, None);
+            // 33ms ≈ 30fps. Lyric overlay text doesn't need 60fps smoothness,
+            // and this alone halves paint/GPU work on top of layout caching.
+            SetTimer(hwnd, 1, 33, None);
             add_tray_icon(hwnd);
             LRESULT(0)
         }
@@ -43,7 +70,10 @@ pub unsafe extern "system" fn wnd_proc(
                     let diff = target - s.float_index;
 
                     let still_animating = if diff.abs() > 0.005 {
-                        s.float_index += diff * 0.25;
+                        // Was tuned for a 16ms tick; bumped up since we now
+                        // tick at 33ms, so the scroll animation still
+                        // converges at roughly the same real-world speed.
+                        s.float_index += diff * 0.45;
                         true
                     } else {
                         s.float_index = target;
@@ -51,11 +81,32 @@ pub unsafe extern "system" fn wnd_proc(
                     };
 
                     let active_playing = s.media.is_playing && !s.media.title.is_empty();
-                    should_invalidate = still_animating || s.is_loading || active_playing;
+
+                    let index_changed = s.current_index != LAST_PAINTED_INDEX;
+
+                    // Only the active line's *word-level* karaoke timing needs
+                    // a fresh paint every tick (the fill color/pop animation
+                    // progresses continuously). A plain single-syllable line
+                    // just sitting on screen doesn't change frame to frame,
+                    // so there's nothing worth compositing.
+                    let active_line_is_karaoke = s
+                        .lyrics_lines
+                        .get(s.current_index)
+                        .map(|line| line.syllables.len() > 1)
+                        .unwrap_or(false);
+
+                    should_invalidate = still_animating
+                        || s.is_loading
+                        || index_changed
+                        || (active_playing && active_line_is_karaoke);
+
+                    if should_invalidate {
+                        LAST_PAINTED_INDEX = s.current_index;
+                    }
                 }
             }
             if should_invalidate {
-                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
+                let _ = InvalidateRect(hwnd, None, false);
             }
             LRESULT(0)
         }
@@ -92,13 +143,13 @@ pub unsafe extern "system" fn wnd_proc(
             } else if id == ID_MENU_OFFSET_PLUS {
                 if let Some(state_arc) = APP_STATE.as_ref() {
                     if let Ok(mut s) = state_arc.lock() {
-                        s.offset_ms += 500;
+                        s.offset_ms += 100;
                     }
                 }
             } else if id == ID_MENU_OFFSET_MINUS {
                 if let Some(state_arc) = APP_STATE.as_ref() {
                     if let Ok(mut s) = state_arc.lock() {
-                        s.offset_ms -= 500;
+                        s.offset_ms -= 100;
                     }
                 }
             } else if id == ID_MENU_OFFSET_RESET {
@@ -151,44 +202,123 @@ pub unsafe extern "system" fn wnd_proc(
         }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
+            let _hdc_screen = BeginPaint(hwnd, &mut ps);
 
             let mut rect = RECT::default();
             let _ = GetClientRect(hwnd, &mut rect);
+            let w = rect.right - rect.left;
+            let h = rect.bottom - rect.top;
 
-            let (mem_dc, mem_bmp) = {
-                let cached = PAINT_CACHE;
-                match cached {
-                    Some((dc, bmp, w, h)) if w == rect.right && h == rect.bottom => (dc, bmp),
-                    _ => {
-                        if let Some((old_dc, old_bmp, _, _)) = PAINT_CACHE.take() {
-                            let _ = DeleteObject(HGDIOBJ(old_bmp.0));
-                            let _ = DeleteDC(old_dc);
+            if w > 0 && h > 0 {
+                let engine = get_d2d_engine();
+
+                // Track changed since last paint -> clear the cached
+                // layouts here, on the UI thread, instead of from the
+                // background fetch task (which isn't safe to touch D2D
+                // from -- see AppState::layout_cache_dirty).
+                if let Some(state_arc) = APP_STATE.as_ref() {
+                    if let Ok(mut s) = state_arc.lock() {
+                        if s.layout_cache_dirty {
+                            engine.clear_layout_cache();
+                            s.layout_cache_dirty = false;
                         }
-                        let dc = CreateCompatibleDC(hdc);
-                        let bmp = CreateCompatibleBitmap(hdc, rect.right, rect.bottom);
-                        PAINT_CACHE = Some((dc, bmp, rect.right, rect.bottom));
-                        (dc, bmp)
                     }
                 }
-            };
-            let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
 
-            SetGraphicsMode(mem_dc, GM_ADVANCED);
+                let mut needs_recreate = true;
+                if let Some(ref cache) = SURFACE_CACHE {
+                    if cache.width == w && cache.height == h {
+                        needs_recreate = false;
+                    }
+                }
 
-            render_window(mem_dc, rect);
+                if needs_recreate {
+                    if let Some(mut old_cache) = SURFACE_CACHE.take() {
+                        old_cache.release();
+                    }
 
-            let _ = BitBlt(hdc, 0, 0, rect.right, rect.bottom, mem_dc, 0, 0, SRCCOPY);
-            SelectObject(mem_dc, old_bmp);
+                    let mem_dc = CreateCompatibleDC(HDC::default());
+                    let bmi = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: w,
+                            biHeight: -h,
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB.0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+
+                    let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+                    let mut created_surface = None;
+
+                    if let Ok(hbmp) =
+                        CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+                    {
+                        let old_bmp = SelectObject(mem_dc, HGDIOBJ(hbmp.0));
+
+                        if let Ok(dc_target) = engine.create_dc_render_target(mem_dc, &rect) {
+                            if let Ok(target) = dc_target.cast::<ID2D1RenderTarget>() {
+                                created_surface = Some(SurfaceCache {
+                                    dc: mem_dc,
+                                    hbmp,
+                                    old_bmp,
+                                    target,
+                                    width: w,
+                                    height: h,
+                                });
+                            }
+                        }
+
+                        if created_surface.is_none() {
+                            let _ = SelectObject(mem_dc, old_bmp);
+                            let _ = DeleteObject(HGDIOBJ(hbmp.0));
+                            let _ = DeleteDC(mem_dc);
+                        }
+                    } else {
+                        let _ = DeleteDC(mem_dc);
+                    }
+
+                    if let Some(cache) = created_surface {
+                        SURFACE_CACHE = Some(cache);
+                    }
+                }
+
+                if let Some(ref cache) = SURFACE_CACHE {
+                    let _ = render_window_d2d(&cache.target, rect, engine);
+
+                    let pt_src = POINT { x: 0, y: 0 };
+                    let size = SIZE { cx: w, cy: h };
+                    let blend = BLENDFUNCTION {
+                        BlendOp: AC_SRC_OVER as u8,
+                        BlendFlags: 0,
+                        SourceConstantAlpha: 255,
+                        AlphaFormat: AC_SRC_ALPHA as u8,
+                    };
+
+                    let _ = UpdateLayeredWindow(
+                        hwnd,
+                        HDC::default(),
+                        None,
+                        Some(&size),
+                        cache.dc,
+                        Some(&pt_src),
+                        COLORREF(0),
+                        Some(&blend),
+                        ULW_ALPHA,
+                    );
+                }
+            }
 
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
         WM_DESTROY => {
             remove_tray_icon(hwnd);
-            if let Some((dc, bmp, _, _)) = PAINT_CACHE.take() {
-                let _ = DeleteObject(HGDIOBJ(bmp.0));
-                let _ = DeleteDC(dc);
+            if let Some(mut cache) = SURFACE_CACHE.take() {
+                cache.release();
             }
             windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
             LRESULT(0)
@@ -231,7 +361,6 @@ pub fn create_main_window() -> HWND {
         )
         .unwrap();
 
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0x000000), 255, LWA_COLORKEY);
         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, SW_SHOW);
         hwnd
     }

@@ -24,6 +24,54 @@ pub struct StyleConfig {
     pub card_bg_hex: Option<String>,
     #[serde(default)]
     pub show_card: Option<bool>,
+    /// Per-word karaoke animation style. One of:
+    /// "pop"   - scale+lift the active word (heaviest, uses a D2D transform)
+    /// "wave"  - vertical bounce, no matrix transform (cheap)
+    /// "fade"  - crossfades base color -> karaoke color (cheapest with motion)
+    /// "sweep" (alias "kf") - ASS/SSA \kf-style left-to-right fill wipe
+    /// "glow"  - soft highlighted glow around the active word
+    /// "none"  - instant color swap only, no animation at all (lightest possible)
+    #[serde(default = "default_karaoke_effect")]
+    pub karaoke_effect: String,
+
+    /// Soft drop-shadow behind all text. Approximated with a few
+    /// low-alpha offset copies (real Gaussian blur needs a hardware
+    /// ID2D1DeviceContext, which this app's DC render target doesn't use).
+    #[serde(default)]
+    pub shadow_enabled: bool,
+    #[serde(default = "default_shadow_hex")]
+    pub shadow_hex: String,
+    /// 0.0-1.0, base darkness of the shadow before falloff.
+    #[serde(default = "default_shadow_opacity")]
+    pub shadow_opacity: f32,
+    #[serde(default = "default_shadow_offset")]
+    pub shadow_offset_x: f32,
+    #[serde(default = "default_shadow_offset")]
+    pub shadow_offset_y: f32,
+    /// How soft/spread out the shadow looks. Higher = softer but a bit
+    /// more expensive (more sample copies drawn). Roughly 1.0-6.0 is sane.
+    #[serde(default = "default_shadow_blur")]
+    pub shadow_blur: f32,
+}
+
+fn default_karaoke_effect() -> String {
+    "pop".to_string()
+}
+
+fn default_shadow_hex() -> String {
+    "000000".to_string()
+}
+
+fn default_shadow_opacity() -> f32 {
+    0.45
+}
+
+fn default_shadow_offset() -> f32 {
+    1.5
+}
+
+fn default_shadow_blur() -> f32 {
+    3.0
 }
 
 impl Default for StyleConfig {
@@ -47,6 +95,13 @@ impl Default for StyleConfig {
             artist_hex: "e2e8f0".into(),
             card_bg_hex: Some("141420".into()),
             show_card: Some(false),
+            karaoke_effect: "wave".into(),
+            shadow_enabled: false,
+            shadow_hex: "000000".into(),
+            shadow_opacity: 0.45,
+            shadow_offset_x: 1.5,
+            shadow_offset_y: 1.5,
+            shadow_blur: 3.0,
         }
     }
 }
@@ -65,6 +120,7 @@ pub fn load_or_create_config() -> StyleConfig {
     default_config
 }
 
+#[allow(dead_code)]
 pub fn hex_to_colorref(hex: &str) -> COLORREF {
     let hex = hex.trim_start_matches('#');
     if hex.len() >= 6 {

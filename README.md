@@ -1,7 +1,7 @@
 # Mini Lyric v2 🎵✨
 
 > **A modern, lightweight, transparent floating lyrics overlay for Windows.**  
-> Powered by Rust, Win32 GDI, Windows System Media Transport Controls (GSMTC), and multi-source TTML/LRC providers.
+> Powered by Rust, Direct2D/DirectWrite, Windows System Media Transport Controls (GSMTC), and multi-source TTML/LRC providers.
 
 ![CI](https://github.com/py7hon/minilyricv2/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -14,19 +14,19 @@
 
 ## 🌟 Key Features
 
-- 💎 **Transparent Floating Overlay**: Sleek, borderless, glasslike overlay that floats over any application or media player (YouTube Music, Spotify, Apple Music, Chrome, etc.).
-- 🎤 **Word-by-Word Karaoke Animation**: Real-time syllable pop-scaling and smooth vertical line scrolling.
-- 🌐 **Automatic Romaji, Romaja & Pinyin**: Automated transliteration and translation sub-badges for Japanese, Korean, Chinese, and non-English tracks.
-- ⚡ **Near-Zero CPU & Memory Footprint**:
+- 💎 **Transparent Floating Overlay**: Sleek, borderless, glasslike Direct2D overlay floating over any application or media player (YouTube Music, Spotify, Apple Music, Chrome, Edge, etc.).
+- ⚡ **Instant 0ms GSMTC Media Polling**: Instantaneous zero-delay playback state & position monitoring via Windows System Media Transport Controls.
+- 🎤 **Native TTML XML & Word-by-Word Karaoke**: Real-time syllable pop-scaling, wave animations, and smooth line scrolling.
+- 🥇 **LyricsPlus Primary Priority Pipeline**:
+  - **Pass 1 (Word-by-Word TTML Karaoke)**: **LyricsPlus** (Primary) ➔ AMLL Dev ➔ LRCMux ➔ Unison ➔ TTMLLIB.
+  - **Pass 2 (Synced Line LRC Fallback)**: **LyricsPlus** (Primary) ➔ LRCMux ➔ Unison ➔ TTMLLIB ➔ LRCLIB ➔ NetEase.
+- 🌐 **Automatic Translation & Dual-Line Merger**: Native merging of dual-line translations (e.g., Javanese, Japanese, Korean, Chinese) into unified main text + sub-text translation lines.
+- 🔤 **Dynamic Word Spacing**: Intelligent XML whitespace preservation and alphanumeric token padding to ensure English words never clump together (`We don't gotta be in love, no`).
+- ⏱️ **Sub-Second 0.1s Fine Sync**: Precise `+100ms` / `-100ms` offset controls available via the system tray context menu.
+- 🍃 **Near-Zero CPU & Memory Footprint**:
   - ~0.0% CPU when media is paused or idle.
-  - Strict Win32 GDI handle deselection ensuring **0% RAM growth or handle leaks**.
-- 🚀 **Multi-Provider Fallback Pipeline**:
-  1. **AMLL Dev API** (`https://api.amll.dev/`) — *Primary TTML Syllable Source*
-  2. **TTMLLIB** (`https://ttmllib.xyz/`) — *Tokenless TTML & LRC Source*
-  3. **LRCLIB** (`https://lrclib.net/`) — *Open-source LRC Database*
-  4. **NetEase Cloud Music API** (`music.163.com`) — *Fallback LRC & Translation Source*
-- 📌 **Lock / Click-Through Mode**: Lock the overlay in place to make it click-through (`WS_EX_TRANSPARENT`), allowing uninterrupted workflow.
-- 🎛️ **System Tray Controls**: Adjust window size, lock position, or fine-tune audio sync timing on the fly.
+  - Efficient Direct2D hardware rendering with zero memory leaks.
+- 📌 **Lock / Click-Through Mode**: Lock position (`WS_EX_TRANSPARENT`) for seamless click-through workflow while listening.
 
 ---
 
@@ -34,7 +34,7 @@
 
 ### Prerequisites
 - **Windows 10 / 11**
-- **Rust toolchain** (1.70+)
+- **Rust toolchain** (1.75+)
 
 ### Building from Source
 
@@ -43,14 +43,14 @@
 git clone https://github.com/py7hon/minilyricv2.git
 cd minilyricv2
 
-# Build debug binary
+# Build debug binary (includes real-time HTTP debug output)
 cargo build
 
-# Build release binary (Optimized executable)
+# Build release binary (Optimized, zero-console release executable)
 cargo build --release
 ```
 
-The compiled binary will be available at `target/release/minilyricv2.exe`.
+The compiled executable will be at `target/release/minilyricv2.exe`.
 
 ---
 
@@ -59,17 +59,18 @@ The compiled binary will be available at `target/release/minilyricv2.exe`.
 | Action | Control |
 | :--- | :--- |
 | **Move Overlay** | Click and drag the track title/artist header (when unlocked). |
-| **Toggle Click-Through Lock** | Click the 🔒 / 🔓 icon in the top-right corner, or right-click the system tray icon and select **Toggle Lock**. |
-| **Tray Context Menu** | Right-click the system tray icon in the Windows taskbar overflow area. |
-| **Sync Timing Adjustment** | Use **Sync: Faster (+500ms)** or **Sync: Slower (-500ms)** in the tray menu. |
+| **Toggle Click-Through Lock** | Click the 🔒 / 🔓 icon in the top-right corner, or right-click the system tray icon and select **Unlock / Lock Position**. |
+| **Tray Context Menu** | Right-click the system tray icon in the Windows taskbar. |
+| **Fine Sync Offset Adjustment** | Select **Sync: Faster (+100ms)** or **Sync: Slower (-100ms)** in the tray menu. |
 
 ---
 
 ## ⚙️ Configuration (`config.toml`)
 
-Mini Lyric v2 automatically creates a `config.toml` file in its working directory upon first launch:
+Mini Lyric v2 automatically creates `config.toml` on first launch:
 
 ```toml
+# Typography & Sizing
 font_family = "Inter"
 font_size_active = 30
 font_size_side = 14
@@ -78,16 +79,40 @@ font_size_title = 20
 font_size_artist = 15
 line_spacing = 75.0
 base_center_y = 85.0
+
+# Sync Offset & Window Transparency
 offset_ms = 0
 opacity = 1.0
+
+# Color Palette (HEX)
 active_hex = "ffffff"
 karaoke_hex = "cba6f7"
 side_hex = "cbd5e1"
 sub_hex = "f8fafc"
 title_hex = "ffffff"
 artist_hex = "e2e8f0"
+card_bg_hex = "141420"
 show_card = false
+
+# Karaoke Animation Effect ("wave", "pop", "fade", "sweep", "glow", "none")
+karaoke_effect = "wave"
+
+# Drop Shadow Customization
+shadow_enabled = false
+shadow_hex = "000000"
+shadow_opacity = 0.45
+shadow_offset_x = 1.5
+shadow_offset_y = 1.5
+shadow_blur = 3.0
 ```
+
+### 🎭 Karaoke Animation Modes (`karaoke_effect`)
+- `"wave"`: Smooth vertical bounce & color transition *(Recommended, lightweight)*.
+- `"pop"`: Dynamic scale-up and lift transform effect.
+- `"fade"`: Smooth color crossfade transition.
+- `"sweep"` (or `"kf"`): Left-to-right fill wipe animation.
+- `"glow"`: Highlighted halo effect surrounding active syllables.
+- `"none"`: Instant color swap with zero motion animation.
 
 ---
 

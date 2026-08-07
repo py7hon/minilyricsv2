@@ -1,32 +1,68 @@
+use crate::providers::http_debug::http_get_with_debug;
 use reqwest::Client;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct AmllSearchResponse {
     #[serde(default)]
-    data: Option<AmllSearchData>,
-}
-
-#[derive(Deserialize)]
-struct AmllSearchData {
-    #[serde(default)]
-    items: Option<Vec<AmllItem>>,
+    data: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Clone)]
 struct AmllItem {
-    id: u64,
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+}
+
+impl AmllItem {
+    fn get_id_str(&self) -> Option<String> {
+        let v = self.id.as_ref()?;
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(n) = v.as_u64() {
+            Some(n.to_string())
+        } else if let Some(n) = v.as_i64() {
+            Some(n.to_string())
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct AmllGetResponse {
     #[serde(default)]
     data: Option<AmllGetDetail>,
+    #[serde(default)]
+    lyrics: Option<String>,
+    #[serde(default, rename = "syncedLyrics")]
+    synced_lyrics: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct AmllGetDetail {
+    #[serde(default)]
     lyrics: Option<String>,
+    #[serde(default, rename = "syncedLyrics")]
+    synced_lyrics: Option<String>,
+}
+
+fn parse_amll_items(v: &serde_json::Value) -> Option<Vec<AmllItem>> {
+    if v.is_array() {
+        serde_json::from_value(v.clone()).ok()
+    } else if v.is_object() {
+        if let Some(items_val) = v.get("items") {
+            if items_val.is_array() {
+                serde_json::from_value(items_val.clone()).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 pub async fn fetch_amll_lyrics(
@@ -34,54 +70,84 @@ pub async fn fetch_amll_lyrics(
     title: &str,
     artist: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let search_q = format!("{} {}", title, artist);
-    let search_url = format!(
-        "https://api.amll.dev/search?keyword={}&type=song",
-        urlencoding::encode(&search_q)
+    let clean_title = title.split('(').next().unwrap_or(title).trim();
+    let enc_title = urlencoding::encode(clean_title);
+    let enc_artist = urlencoding::encode(artist);
+    let q_str = format!("{} {}", clean_title, artist);
+    let enc_q = urlencoding::encode(&q_str);
+
+    // 1. Try AMLL official search endpoints
+    let search_urls = [
+        format!(
+            "https://api.amll.dev/v1/lyrics/search?musicName={}&artistName={}",
+            enc_title, enc_artist
+        ),
+        format!("https://api.amll.dev/v1/lyrics/search?q={}", enc_q),
+    ];
+
+    let mut found_id = None;
+
+    for url in search_urls {
+        if let Ok(body) = http_get_with_debug(client, &url, "AMLL").await {
+            if body.trim().starts_with('{') {
+                if let Ok(search_res) = serde_json::from_str::<AmllSearchResponse>(&body) {
+                    if let Some(data_val) = search_res.data {
+                        if let Some(items) = parse_amll_items(&data_val) {
+                            if !items.is_empty() {
+                                if let Some(id_str) = items[0].get_id_str() {
+                                    found_id = Some(id_str);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fetch full TTML by ID
+    if let Some(first_id) = found_id {
+        let get_url = format!("https://api.amll.dev/v1/lyrics/get?id={}", first_id);
+        if let Ok(get_body) = http_get_with_debug(client, &get_url, "AMLL").await {
+            if let Ok(get_res) = serde_json::from_str::<AmllGetResponse>(&get_body) {
+                let ttml = get_res
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.lyrics.clone().or(d.synced_lyrics.clone()))
+                    .or(get_res.lyrics)
+                    .or(get_res.synced_lyrics);
+
+                if let Some(ttml_str) = ttml {
+                    if !ttml_str.trim().is_empty() {
+                        return Ok(ttml_str);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback to /v1/lrclib/get
+    let lrclib_url = format!(
+        "https://api.amll.dev/v1/lrclib/get?track_name={}&artist_name={}",
+        enc_title, enc_artist
     );
+    if let Ok(lrc_body) = http_get_with_debug(client, &lrclib_url, "AMLL LRCLIB").await {
+        if let Ok(get_res) = serde_json::from_str::<AmllGetResponse>(&lrc_body) {
+            let ttml = get_res
+                .data
+                .as_ref()
+                .and_then(|d| d.lyrics.clone().or(d.synced_lyrics.clone()))
+                .or(get_res.lyrics)
+                .or(get_res.synced_lyrics);
 
-    let resp = client
-        .get(&search_url)
-        .timeout(std::time::Duration::from_secs(4))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        return Err("AMLL search status non-ok".into());
+            if let Some(ttml_str) = ttml {
+                if !ttml_str.trim().is_empty() {
+                    return Ok(ttml_str);
+                }
+            }
+        }
     }
 
-    let search_res: AmllSearchResponse = resp.json().await?;
-    let items = search_res
-        .data
-        .and_then(|d| d.items)
-        .ok_or("No AMLL items found")?;
-
-    if items.is_empty() {
-        return Err("AMLL search returned empty array".into());
-    }
-
-    let first_id = items[0].id;
-    let get_url = format!("https://api.amll.dev/get?id={}", first_id);
-
-    let get_resp = client
-        .get(&get_url)
-        .timeout(std::time::Duration::from_secs(4))
-        .send()
-        .await?;
-
-    if !get_resp.status().is_success() {
-        return Err("AMLL get status non-ok".into());
-    }
-
-    let get_res: AmllGetResponse = get_resp.json().await?;
-    let ttml = get_res
-        .data
-        .and_then(|d| d.lyrics)
-        .ok_or("No TTML lyrics in AMLL response")?;
-
-    if ttml.trim().is_empty() {
-        return Err("AMLL returned empty TTML string".into());
-    }
-
-    Ok(ttml)
+    Err("AMLL returned no lyrics".into())
 }

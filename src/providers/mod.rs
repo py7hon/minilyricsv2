@@ -1,5 +1,9 @@
 pub mod amll;
+pub mod http_debug;
 pub mod lrclib;
+pub mod lrcmux;
+pub mod lyricsplus;
 pub mod netease;
 pub mod translation;
 pub mod ttmllib;
+pub mod unison;
