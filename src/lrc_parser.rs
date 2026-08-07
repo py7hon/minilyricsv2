@@ -23,14 +23,12 @@ fn parse_ttml_time_str(s: &str) -> Option<Duration> {
         return None;
     }
 
-    if s.ends_with('s') {
-        let secs_str = &s[..s.len() - 1];
+    if let Some(secs_str) = s.strip_suffix('s') {
         let secs_f: f64 = secs_str.parse().ok()?;
         return Some(Duration::from_secs_f64(secs_f));
     }
 
-    if s.ends_with("ms") {
-        let ms_str = &s[..s.len() - 2];
+    if let Some(ms_str) = s.strip_suffix("ms") {
         let ms: u64 = ms_str.parse().ok()?;
         return Some(Duration::from_millis(ms));
     }
