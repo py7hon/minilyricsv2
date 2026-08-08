@@ -129,16 +129,60 @@ async fn main() {
 
                 match result {
                     Ok((ttml_raw, plain_opt, provider)) => {
+                        let karaoke_mode = if let Ok(s) = state_clone.lock() {
+                            s.config.karaoke_mode.trim().to_lowercase()
+                        } else {
+                            "auto".to_string()
+                        };
+
                         let mut parsed_lines = lrc_parser::parse_lrc(&ttml_raw);
 
-                        for line in &mut parsed_lines {
-                            if line.sub_text.is_none()
-                                || line.sub_text.as_ref().is_none_or(|st| st.trim().is_empty())
-                            {
-                                if let Some(trans) = lyrics_client.translate_text(&line.text).await
-                                {
-                                    line.sub_text = Some(trans);
+                        // When karaoke_mode is "always", force word-by-word on
+                        // all lines and synthesize per-syllable durations for
+                        // lines that didn't come with real timing data.
+                        if karaoke_mode == "always" {
+                            for line in &mut parsed_lines {
+                                if !line.is_karaoke {
+                                    line.is_karaoke = true;
+
+                                    let line_dur_ms = if let Some(end) = line.end_time {
+                                        end.saturating_sub(line.time).as_millis() as u64
+                                    } else {
+                                        4000
+                                    };
+                                    let total_chars: usize =
+                                        line.syllables.iter().map(|s| s.text.chars().count()).sum();
+                                    if total_chars > 0 {
+                                        let eff = line_dur_ms.clamp(500, 15000);
+                                        for syl in line.syllables.iter_mut() {
+                                            let cc = syl.text.chars().count() as u64;
+                                            syl.duration = Duration::from_millis(
+                                                ((eff * cc) / (total_chars as u64)).max(50),
+                                            );
+                                        }
+                                    }
                                 }
+                            }
+                        }
+
+                        // Translate every line that needs it concurrently instead
+                        // of awaiting each translation request one at a time —
+                        // with N untranslated lines this turns an N * ~request_time
+                        // serial wait into roughly one request's worth of wait.
+                        let translation_futs =
+                            parsed_lines.iter().enumerate().filter_map(|(idx, line)| {
+                                let needs_translation = line.sub_text.is_none()
+                                    || line.sub_text.as_ref().is_none_or(|st| st.trim().is_empty());
+                                needs_translation.then(|| {
+                                    let text = line.text.clone();
+                                    let client = lyrics_client.clone();
+                                    async move { (idx, client.translate_text(&text).await) }
+                                })
+                            });
+                        let translations = futures::future::join_all(translation_futs).await;
+                        for (idx, trans_opt) in translations {
+                            if let Some(trans) = trans_opt {
+                                parsed_lines[idx].sub_text = Some(trans);
                             }
                         }
 

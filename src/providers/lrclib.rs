@@ -42,7 +42,20 @@ pub async fn fetch_lrclib_lyrics(
         url.push_str(&format!("&duration={}", dur));
     }
 
-    if let Ok(text) = http_get_with_debug(client, &url, "LRCLIB").await {
+    let search_q = format!("{} {}", title, artist);
+    let search_url = format!(
+        "https://lrclib.net/api/search?q={}",
+        urlencoding::encode(&search_q)
+    );
+
+    // Fire /api/get (exact match) and /api/search (fuzzy fallback)
+    // concurrently instead of waiting for /api/get to finish (and often
+    // time out) before even starting /api/search.
+    let get_fut = http_get_with_debug(client, &url, "LRCLIB");
+    let search_fut = http_get_with_debug(client, &search_url, "LRCLIB Search");
+    let (get_resp, search_resp) = tokio::join!(get_fut, search_fut);
+
+    if let Ok(text) = get_resp {
         if let Ok(data) = serde_json::from_str::<LrclibResponse>(&text) {
             let synced = data.synced_lyrics.filter(|s| !s.trim().is_empty());
             let plain = data.plain_lyrics.filter(|s| !s.trim().is_empty());
@@ -52,13 +65,7 @@ pub async fn fetch_lrclib_lyrics(
         }
     }
 
-    let search_q = format!("{} {}", title, artist);
-    let search_url = format!(
-        "https://lrclib.net/api/search?q={}",
-        urlencoding::encode(&search_q)
-    );
-
-    let search_body = http_get_with_debug(client, &search_url, "LRCLIB Search").await?;
+    let search_body = search_resp?;
     let results: Vec<LrclibSearchResult> = serde_json::from_str(&search_body)?;
 
     let title_lower = title.to_lowercase();

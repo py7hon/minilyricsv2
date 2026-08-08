@@ -16,6 +16,8 @@ pub struct StyleConfig {
     pub opacity: f32,
     pub active_hex: String,
     pub karaoke_hex: String,
+    #[serde(default = "default_karaoke_v2_hex")]
+    pub karaoke_v2_hex: String,
     pub side_hex: String,
     pub sub_hex: String,
     pub title_hex: String,
@@ -24,9 +26,17 @@ pub struct StyleConfig {
     pub card_bg_hex: Option<String>,
     #[serde(default)]
     pub show_card: Option<bool>,
+
+    /// Karaoke display mode: "auto", "always", or "never"
+    #[serde(default = "default_karaoke_mode")]
+    pub karaoke_mode: String,
+
     /// Per-word karaoke animation style. One of:
     /// "pop"   - scale+lift the active word (heaviest, uses a D2D transform)
+    /// "pulse" - breathing scale in/out, no lift (uses a D2D transform)
     /// "wave"  - vertical bounce, no matrix transform (cheap)
+    /// "rise"  - slides up into place from below while fading to color (cheap)
+    /// "shake" - horizontal jitter that settles as the syllable finishes (cheap)
     /// "fade"  - crossfades base color -> karaoke color (cheapest with motion)
     /// "sweep" (alias "kf") - ASS/SSA \kf-style left-to-right fill wipe
     /// "glow"  - soft highlighted glow around the active word
@@ -52,6 +62,14 @@ pub struct StyleConfig {
     /// more expensive (more sample copies drawn). Roughly 1.0-6.0 is sane.
     #[serde(default = "default_shadow_blur")]
     pub shadow_blur: f32,
+}
+
+fn default_karaoke_v2_hex() -> String {
+    "f38ba8".to_string()
+}
+
+fn default_karaoke_mode() -> String {
+    "auto".to_string()
 }
 
 fn default_karaoke_effect() -> String {
@@ -80,7 +98,7 @@ impl Default for StyleConfig {
             font_family: "Inter".into(),
             font_size_active: 30,
             font_size_side: 14,
-            font_size_sub: 12,
+            font_size_sub: 14,
             font_size_title: 20,
             font_size_artist: 15,
             line_spacing: 75.0,
@@ -89,14 +107,16 @@ impl Default for StyleConfig {
             opacity: 1.0,
             active_hex: "ffffff".into(),
             karaoke_hex: "cba6f7".into(),
+            karaoke_v2_hex: "f38ba8".into(),
             side_hex: "cbd5e1".into(),
             sub_hex: "f8fafc".into(),
             title_hex: "ffffff".into(),
             artist_hex: "e2e8f0".into(),
             card_bg_hex: Some("141420".into()),
             show_card: Some(false),
-            karaoke_effect: "wave".into(),
-            shadow_enabled: false,
+            karaoke_mode: "always".into(),
+            karaoke_effect: "pulse".into(),
+            shadow_enabled: true,
             shadow_hex: "000000".into(),
             shadow_opacity: 0.45,
             shadow_offset_x: 1.5,

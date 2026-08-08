@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::providers::http_debug::http_get_with_debug;
 use crate::providers::ttmllib::LyricsResult;
 use reqwest::Client;
@@ -66,10 +68,16 @@ pub async fn fetch_unison_lyrics(
         enc_song, enc_artist
     );
 
-    let urls = [base_url, search_url];
+    // Race both URLs concurrently: don't wait for the slower one once the
+    // other has already returned usable lyrics.
+    let mut set = tokio::task::JoinSet::new();
+    for url in [base_url, search_url] {
+        let client = client.clone();
+        set.spawn(async move { http_get_with_debug(&client, &url, "Unison").await.ok() });
+    }
 
-    for url in urls {
-        if let Ok(text) = http_get_with_debug(client, &url, "Unison").await {
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(text)) = joined {
             if text.trim().starts_with('{') {
                 if let Ok(resp) = serde_json::from_str::<UnisonResponse>(&text) {
                     if resp.success {

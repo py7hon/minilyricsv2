@@ -1,8 +1,11 @@
 pub mod amll;
+pub mod binimum;
+pub mod boidu;
 pub mod http_debug;
 pub mod lrclib;
 pub mod lrcmux;
 pub mod lyricsplus;
+pub mod musixmatch;
 pub mod netease;
 pub mod translation;
 pub mod ttmllib;

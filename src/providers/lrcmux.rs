@@ -1,7 +1,8 @@
 use crate::providers::http_debug::http_get_with_debug;
-use crate::providers::ttmllib::LyricsResult;
+use crate::providers::ttmllib::{convert_kpoe_array_to_lrc, LyricsResult};
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize)]
 struct LrcMuxResponse {
@@ -15,6 +16,45 @@ struct LrcMuxResponse {
     lyrics: Option<String>,
     #[serde(default, rename = "plainLyrics")]
     plain_lyrics: Option<String>,
+}
+
+/// Parses a single LRCMux response body. Handles both the "flat" shape
+/// (synced/plain lyrics as plain strings — `LrcMuxResponse`) used by the
+/// default endpoint, and the KPOE-compat endpoint's shape, where `lyrics`
+/// is a JSON array of per-word/per-line `{ time, duration, text }` objects
+/// instead of a string. The old code only tried the flat struct, so a
+/// perfectly good KPOE-compat response would fail to deserialize (type
+/// mismatch on `lyrics`) and get silently discarded.
+fn parse_lrcmux_response(text: &str) -> Option<LyricsResult> {
+    if !text.trim().starts_with('{') {
+        return None;
+    }
+
+    // 1. Try the flat-string shape first.
+    if let Ok(res) = serde_json::from_str::<LrcMuxResponse>(text) {
+        let synced = res
+            .lyrics_ttml
+            .or(res.ttml)
+            .or(res.synced_lyrics)
+            .or(res.lyrics)
+            .filter(|s| !s.trim().is_empty());
+        let plain = res.plain_lyrics.filter(|s| !s.trim().is_empty());
+
+        if synced.is_some() || plain.is_some() {
+            return Some(LyricsResult { synced, plain });
+        }
+    }
+
+    // 2. Fall back to the KPOE-compat array shape: `{ "lyrics": [ {time,
+    //    duration, text}, ... ] }` (this is what /compat/kpoe/v2/... and
+    //    similar endpoints actually return).
+    let v: Value = serde_json::from_str(text).ok()?;
+    let arr = v.get("lyrics").and_then(|l| l.as_array())?;
+    let synced = convert_kpoe_array_to_lrc(arr)?;
+    Some(LyricsResult {
+        synced: Some(synced),
+        plain: None,
+    })
 }
 
 pub async fn fetch_lrcmux_lyrics(
@@ -37,22 +77,19 @@ pub async fn fetch_lrcmux_lyrics(
         format!("https://api.lrcmux.dev/get?title={}&artist={}", enc_title, enc_artist),
     ];
 
+    // Race all fallback URLs concurrently: whichever request returns usable
+    // lyrics first wins immediately, and the rest are cancelled instead of
+    // being awaited to completion (or to their 4s timeout) for nothing.
+    let mut set = tokio::task::JoinSet::new();
     for url in urls {
-        if let Ok(text) = http_get_with_debug(client, &url, "LRCMux").await {
-            if text.trim().starts_with('{') {
-                if let Ok(res) = serde_json::from_str::<LrcMuxResponse>(&text) {
-                    let synced = res
-                        .lyrics_ttml
-                        .or(res.ttml)
-                        .or(res.synced_lyrics)
-                        .or(res.lyrics)
-                        .filter(|s| !s.trim().is_empty());
-                    let plain = res.plain_lyrics.filter(|s| !s.trim().is_empty());
+        let client = client.clone();
+        set.spawn(async move { http_get_with_debug(&client, &url, "LRCMux").await.ok() });
+    }
 
-                    if synced.is_some() || plain.is_some() {
-                        return Ok(LyricsResult { synced, plain });
-                    }
-                }
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some(text)) = joined {
+            if let Some(result) = parse_lrcmux_response(&text) {
+                return Ok(result);
             }
         }
     }

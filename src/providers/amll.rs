@@ -83,19 +83,23 @@ pub async fn fetch_amll_lyrics(
         format!("https://api.amll.dev/v1/lyrics/search?q={}", enc_q),
     ];
 
+    // Try both AMLL search endpoints concurrently instead of sequentially.
+    let (search_r0, search_r1) = tokio::join!(
+        http_get_with_debug(client, &search_urls[0], "AMLL"),
+        http_get_with_debug(client, &search_urls[1], "AMLL"),
+    );
+
     let mut found_id = None;
 
-    for url in search_urls {
-        if let Ok(body) = http_get_with_debug(client, &url, "AMLL").await {
-            if body.trim().starts_with('{') {
-                if let Ok(search_res) = serde_json::from_str::<AmllSearchResponse>(&body) {
-                    if let Some(data_val) = search_res.data {
-                        if let Some(items) = parse_amll_items(&data_val) {
-                            if !items.is_empty() {
-                                if let Some(id_str) = items[0].get_id_str() {
-                                    found_id = Some(id_str);
-                                    break;
-                                }
+    for body in [search_r0, search_r1].into_iter().flatten() {
+        if body.trim().starts_with('{') {
+            if let Ok(search_res) = serde_json::from_str::<AmllSearchResponse>(&body) {
+                if let Some(data_val) = search_res.data {
+                    if let Some(items) = parse_amll_items(&data_val) {
+                        if !items.is_empty() {
+                            if let Some(id_str) = items[0].get_id_str() {
+                                found_id = Some(id_str);
+                                break;
                             }
                         }
                     }

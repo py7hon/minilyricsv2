@@ -15,6 +15,28 @@ pub struct LrcLine {
     pub sub_text: Option<String>,
     #[allow(dead_code)]
     pub style_name: String,
+    pub is_karaoke: bool,
+    pub singer_index: u8,
+}
+
+fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str) -> u8 {
+    let combined = format!("{} {}", p_open_tag, div_open_tag).to_lowercase();
+    if combined.contains("v2")
+        || combined.contains("v3")
+        || combined.contains("secondary")
+        || combined.contains("duet")
+        || combined.contains("agent=\"v2\"")
+        || combined.contains("agent='v2'")
+    {
+        return 1;
+    }
+    let trimmed = text.trim();
+    if (trimmed.starts_with('(') && trimmed.ends_with(')'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+    {
+        return 1;
+    }
+    0
 }
 
 fn parse_ttml_time_str(s: &str) -> Option<Duration> {
@@ -98,6 +120,33 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
         let p_block = &content[abs_p_start..p_end];
         pos = p_end;
 
+        let p_tag_end = p_block.find('>').unwrap_or(p_block.len());
+        let p_open_tag = &p_block[..p_tag_end];
+
+        if p_open_tag.contains("role=\"translation\"")
+            || p_open_tag.contains("role='translation'")
+            || p_open_tag.contains("role=\"transliteration\"")
+            || p_open_tag.contains("role='transliteration'")
+        {
+            continue;
+        }
+
+        let mut div_open_tag = "";
+        if let Some(last_div_start) = content[..abs_p_start].rfind("<div") {
+            let last_div_end = content[last_div_start..abs_p_start].rfind("</div>");
+            if last_div_end.is_none() {
+                let div_tag_end = content[last_div_start..].find('>').unwrap_or(0);
+                div_open_tag = &content[last_div_start..last_div_start + div_tag_end];
+                if div_open_tag.contains("role=\"translation\"")
+                    || div_open_tag.contains("role='translation'")
+                    || div_open_tag.contains("role=\"transliteration\"")
+                    || div_open_tag.contains("role='transliteration'")
+                {
+                    continue;
+                }
+            }
+        }
+
         let begin_val = extract_xml_attr(p_block, "begin");
         let end_val = extract_xml_attr(p_block, "end");
 
@@ -109,6 +158,7 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
         let mut syllables = Vec::new();
         let mut full_text = String::new();
+        let mut is_karaoke = false;
 
         let mut span_pos = 0;
         while let Some(s_start) = p_block[span_pos..].find("<span") {
@@ -126,19 +176,32 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             let span_text_raw = &p_block[s_close_tag..s_end];
             span_pos = s_end + 7;
 
-            let mut span_text = strip_xml_tags(span_text_raw);
+            let span_text = strip_xml_tags(span_text_raw);
             if span_text.is_empty() {
                 continue;
             }
 
+            let role_val = extract_xml_attr(tag_attrs, "ttm:role")
+                .or_else(|| extract_xml_attr(tag_attrs, "role"));
+
+            if let Some(role) = role_val {
+                let role_lower = role.to_lowercase();
+                if role_lower.contains("translation")
+                    || role_lower.contains("transliteration")
+                    || role_lower.contains("roman")
+                {
+                    continue;
+                }
+            }
+
             let after_span = &p_block[s_end + 7..];
             let has_outside_space = after_span.starts_with(' ')
-                || after_span.starts_with('\n')
-                || after_span.starts_with('\r')
-                || after_span.starts_with('\t');
+                && !after_span.starts_with('\r')
+                && !after_span.starts_with('\n');
 
-            if has_outside_space && !span_text.ends_with(' ') {
-                span_text.push(' ');
+            let mut final_span_text = span_text;
+            if has_outside_space && !final_span_text.ends_with(' ') {
+                final_span_text.push(' ');
             }
 
             let s_begin = extract_xml_attr(tag_attrs, "begin")
@@ -148,6 +211,10 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                 .as_deref()
                 .and_then(parse_ttml_time_str);
 
+            if s_begin.is_some() || s_end_t.is_some() {
+                is_karaoke = true;
+            }
+
             let dur = if let (Some(b), Some(e)) = (s_begin, s_end_t) {
                 e.saturating_sub(b)
             } else {
@@ -155,20 +222,23 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             };
 
             syllables.push(Syllable {
-                text: span_text.clone(),
+                text: final_span_text.clone(),
                 duration: dur,
             });
-            full_text.push_str(&span_text);
+            full_text.push_str(&final_span_text);
         }
 
         if syllables.is_empty() {
             let raw_inner = strip_xml_tags(p_block);
             if !raw_inner.trim().is_empty() {
-                let (syls, plain) = parse_api_karaoke(&raw_inner);
+                let (syls, plain, inner_k) = parse_api_karaoke(&raw_inner);
                 syllables = syls;
                 full_text = plain;
+                is_karaoke = inner_k;
             }
         }
+
+        let singer_index = detect_singer_index(p_open_tag, div_open_tag, &full_text);
 
         if !full_text.trim().is_empty() {
             lines.push(LrcLine {
@@ -178,6 +248,8 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                 syllables,
                 sub_text: None,
                 style_name: "Default".to_string(),
+                is_karaoke,
+                singer_index,
             });
         }
     }
@@ -226,7 +298,8 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                     }
 
                     if let Some(base_time) = parse_lrc_time_str(time_str) {
-                        let (syllables, plain_text) = parse_api_karaoke(raw_text);
+                        let (syllables, plain_text, is_karaoke) = parse_api_karaoke(raw_text);
+                        let singer_index = detect_singer_index("", "", &plain_text);
                         if !plain_text.is_empty() {
                             raw_lines.push(LrcLine {
                                 time: base_time,
@@ -235,6 +308,8 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                                 syllables,
                                 sub_text,
                                 style_name: "Default".to_string(),
+                                is_karaoke,
+                                singer_index,
                             });
                         }
                     }
@@ -263,6 +338,10 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
     for i in 0..lines.len() {
         if lines[i].end_time.is_none() && i + 1 < lines.len() {
             lines[i].end_time = Some(lines[i + 1].time);
+        }
+
+        if !lines[i].is_karaoke {
+            continue;
         }
 
         let line_duration_ms = if let Some(end) = lines[i].end_time {
@@ -329,9 +408,10 @@ fn is_cjk(c: char) -> bool {
     (0xAC00..=0xD7AF).contains(&u) // Hangul
 }
 
-fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
+fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
     let mut syllables = Vec::new();
     let mut plain_text = String::new();
+    let mut has_word_timestamps = false;
 
     if input.contains('<') && input.contains('>') {
         let mut current_text = String::new();
@@ -343,7 +423,11 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
                 in_duration = true;
             } else if ch == '>' {
                 in_duration = false;
-                let dur_ms = dur_str.parse::<u64>().unwrap_or(300);
+                let parsed_dur = dur_str.parse::<u64>().ok();
+                let dur_ms = parsed_dur.unwrap_or(300);
+                if parsed_dur.is_some() {
+                    has_word_timestamps = true;
+                }
 
                 if !current_text.is_empty() {
                     syllables.push(Syllable {
@@ -406,7 +490,11 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String) {
         }
     }
 
-    (syllables, plain_text.trim().to_string())
+    (
+        syllables,
+        plain_text.trim().to_string(),
+        has_word_timestamps,
+    )
 }
 
 pub fn find_current_line(lines: &[LrcLine], pos: Duration) -> Option<usize> {
@@ -422,4 +510,101 @@ pub fn find_current_line(lines: &[LrcLine], pos: Duration) -> Option<usize> {
         }
     }
     Some(best_idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plain_lrc_not_karaoke() {
+        let lrc = "[00:10.00] Hello world";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].is_karaoke);
+    }
+
+    #[test]
+    fn test_word_by_word_lrc_is_karaoke() {
+        let lrc = "[00:10.00] <200>Hello <300>world";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].is_karaoke);
+    }
+
+    #[test]
+    fn test_ttml_with_spans_is_karaoke() {
+        let ttml = r#"<tt><body><div><p begin="00:00:10.00"><span begin="00:00:10.00" end="00:00:10.50">Hello </span><span begin="00:00:10.50" end="00:00:11.00">world</span></p></div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].is_karaoke);
+    }
+
+    #[test]
+    fn test_ttml_without_spans_not_karaoke() {
+        let ttml = r#"<tt><body><div><p begin="00:00:10.00">Hello world</p></div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].is_karaoke);
+    }
+
+    #[test]
+    fn test_ttml_translation_and_transliteration_ignored() {
+        let ttml = r#"<tt xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body>
+            <div ttm:role="main"><p begin="00:00:10.00">Main lyric</p></div>
+            <div ttm:role="translation" xml:lang="zh-CN"><p begin="00:00:10.00">Chinese translation</p></div>
+            <div ttm:role="transliteration" xml:lang="zh-Latn"><p begin="00:00:10.00">Pinyin transliteration</p></div>
+        </body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "Main lyric");
+        assert!(lines[0].sub_text.is_none());
+    }
+
+    #[test]
+    fn test_ttml_inline_span_translation_separated() {
+        let ttml = r#"<tt xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div>
+            <p begin="00:00:10.00" end="00:00:15.00">
+                <span begin="00:00:10.00" end="00:00:12.00">Hello </span>
+                <span begin="00:00:12.00" end="00:00:15.00">world</span>
+                <span ttm:role="x-translation" xml:lang="zh-CN">你好世界</span>
+                <span ttm:role="x-roman" xml:lang="zh-Latn">nǐ hǎo shì jiè</span>
+            </p>
+        </div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "Hello world");
+        assert_eq!(lines[0].syllables.len(), 2);
+        assert!(lines[0].sub_text.is_none());
+    }
+
+    #[test]
+    fn test_ttml_split_word_syllables_no_extra_space() {
+        let ttml = r#"<tt><body><div>
+            <p begin="00:00:24.00" end="00:00:25.10">
+                <span begin="00:00:24.00" end="00:00:24.30">me</span>
+                <span begin="00:00:24.30" end="00:00:25.10">ans</span>
+            </p>
+        </div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "means");
+    }
+
+    #[test]
+    fn test_ttml_ending_no_extra_space() {
+        let ttml = r#"<tt><body><div>
+            <p begin="00:00:20.00" end="00:00:25.00">
+                <span begin="00:00:20.00" end="00:00:21.00">If </span>
+                <span begin="00:00:21.00" end="00:00:22.00">the </span>
+                <span begin="00:00:22.00" end="00:00:23.00">world </span>
+                <span begin="00:00:23.00" end="00:00:23.50">was </span>
+                <span begin="00:00:23.50" end="00:00:24.00">en</span>
+                <span begin="00:00:24.00" end="00:00:25.00">ding</span>
+            </p>
+        </div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "If the world was ending");
+    }
 }

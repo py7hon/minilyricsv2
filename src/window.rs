@@ -19,10 +19,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
     LoadCursorW, RegisterClassW, SetTimer, SetWindowPos, TranslateMessage, UpdateLayeredWindow,
-    CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, IDC_ARROW, MSG, SWP_NOMOVE, SWP_NOZORDER, SW_SHOW,
-    ULW_ALPHA, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCHITTEST,
-    WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, HWND_TOPMOST, IDC_ARROW, MSG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOW, ULW_ALPHA, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 struct SurfaceCache {
@@ -47,6 +47,10 @@ static mut SURFACE_CACHE: Option<SurfaceCache> = None;
 // (and therefore skip the expensive UpdateLayeredWindow composite) when
 // nothing on screen would actually change this tick.
 static mut LAST_PAINTED_INDEX: usize = usize::MAX;
+// Counter for the 33ms WM_TIMER ticks so we can do periodic (every ~2s)
+// housekeeping like re-asserting HWND_TOPMOST without doing it every frame.
+static mut TOPMOST_TICK_COUNTER: u32 = 0;
+const TOPMOST_REASSERT_TICKS: u32 = 60; // ~2 seconds at 33ms/tick
 
 pub unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
@@ -89,11 +93,18 @@ pub unsafe extern "system" fn wnd_proc(
                     // progresses continuously). A plain single-syllable line
                     // just sitting on screen doesn't change frame to frame,
                     // so there's nothing worth compositing.
-                    let active_line_is_karaoke = s
-                        .lyrics_lines
-                        .get(s.current_index)
-                        .map(|line| line.syllables.len() > 1)
-                        .unwrap_or(false);
+                    let active_line_is_karaoke = {
+                        let mode = s.config.karaoke_mode.trim().to_lowercase();
+                        match mode.as_str() {
+                            "always" => true,
+                            "never" => false,
+                            _ => s
+                                .lyrics_lines
+                                .get(s.current_index)
+                                .map(|line| line.is_karaoke)
+                                .unwrap_or(false),
+                        }
+                    };
 
                     should_invalidate = still_animating
                         || s.is_loading
@@ -107,6 +118,23 @@ pub unsafe extern "system" fn wnd_proc(
             }
             if should_invalidate {
                 let _ = InvalidateRect(hwnd, None, false);
+            }
+
+            // Periodically re-assert TOPMOST so fullscreen / borderless games
+            // can't permanently steal our z-order. SWP_NOACTIVATE ensures we
+            // never yank focus away from the game.
+            TOPMOST_TICK_COUNTER += 1;
+            if TOPMOST_TICK_COUNTER >= TOPMOST_REASSERT_TICKS {
+                TOPMOST_TICK_COUNTER = 0;
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
             }
             LRESULT(0)
         }

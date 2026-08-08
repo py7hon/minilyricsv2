@@ -165,14 +165,18 @@ pub unsafe fn render_window_d2d(
 
             if !s.media.title.is_empty() {
                 let font_size_title_capped = (cfg.font_size_title.min(40)) as f32;
+                let max_title_h = (font_size_title_capped * 2.2).max(28.0);
                 let title_layout = engine.get_cached_text_layout(
                     &s.media.title,
                     &cfg.font_family,
                     font_size_title_capped,
                     true,
-                    width_f - 60.0,
-                    font_size_title_capped + 10.0,
+                    (width_f - 60.0).max(50.0),
+                    max_title_h,
                 )?;
+                let mut title_metrics = DWRITE_TEXT_METRICS::default();
+                title_layout.GetMetrics(&mut title_metrics)?;
+
                 let title_color = hex_to_d2d_color(&cfg.title_hex, 1.0);
                 draw_text_with_shadow(
                     target,
@@ -184,17 +188,22 @@ pub unsafe fn render_window_d2d(
                     cfg,
                 );
 
-                cursor_y += font_size_title_capped + 2.0;
+                cursor_y += title_metrics.height + 2.0;
+            }
 
+            if !s.media.artist.is_empty() {
                 let font_size_artist_capped = (cfg.font_size_artist.min(40)) as f32;
                 let artist_layout = engine.get_cached_text_layout(
                     &s.media.artist,
                     &cfg.font_family,
                     font_size_artist_capped,
                     false,
-                    width_f - 60.0,
-                    font_size_artist_capped + 10.0,
+                    (width_f - 60.0).max(50.0),
+                    (font_size_artist_capped * 2.0) + 10.0,
                 )?;
+                let mut artist_metrics = DWRITE_TEXT_METRICS::default();
+                artist_layout.GetMetrics(&mut artist_metrics)?;
+
                 let artist_color = hex_to_d2d_color(&cfg.artist_hex, 0.95);
                 draw_text_with_shadow(
                     target,
@@ -205,16 +214,19 @@ pub unsafe fn render_window_d2d(
                     &artist_color,
                     cfg,
                 );
+
+                cursor_y += artist_metrics.height + 2.0;
             }
 
-            let header_bottom = cursor_y + 8.0;
+            let header_bottom = cursor_y + 4.0;
 
             let real_pos_ms = s.media.position_ms;
             let adjusted_ms = (real_pos_ms as i64 + s.offset_ms).max(0) as u64;
             let float_idx = s.float_index;
 
             let active_font_size = (cfg.font_size_active.min(40)) as f32;
-            let active_karaoke_color = hex_to_d2d_color(&cfg.karaoke_hex, 1.0);
+            let font_size_sub_capped = cfg.font_size_sub.clamp(14, 40) as f32;
+            let _active_karaoke_color = hex_to_d2d_color(&cfg.karaoke_hex, 1.0);
             let active_text_color = hex_to_d2d_color(&cfg.active_hex, 1.0);
 
             let max_w = width_f - 30.0;
@@ -264,9 +276,12 @@ pub unsafe fn render_window_d2d(
                     .as_ref()
                     .is_some_and(|sub| !sub.is_empty())
                 {
-                    active_h += (cfg.font_size_sub.min(40) as f32 * 2.0) + 16.0;
+                    active_h += font_size_sub_capped + 14.0;
                 }
             }
+
+            let max_center_y = (height_f - active_h - 24.0).max(header_bottom + 4.0);
+            let active_center_y = base_center_y.clamp(header_bottom + 4.0, max_center_y);
 
             if s.is_loading {
                 let loading_layout = engine.get_cached_text_layout(
@@ -283,7 +298,7 @@ pub unsafe fn render_window_d2d(
                     &reusable_brush,
                     &loading_layout,
                     15.0,
-                    base_center_y,
+                    active_center_y,
                     &loading_color,
                     cfg,
                 );
@@ -295,17 +310,23 @@ pub unsafe fn render_window_d2d(
                         let distance_from_float = (target_idx as f32) - float_idx;
 
                         let line_top = if offset <= 0 {
-                            base_center_y + distance_from_float * base_step
+                            active_center_y + distance_from_float * base_step
                         } else {
-                            base_center_y
+                            active_center_y
                                 + active_h
                                 + 12.0
                                 + (distance_from_float - 1.0) * base_step
                         };
 
-                        if line_top < header_bottom {
+                        if offset != 0 && line_top < header_bottom {
                             continue;
                         }
+
+                        let active_karaoke_color = if line.singer_index > 0 {
+                            hex_to_d2d_color(&cfg.karaoke_v2_hex, 1.0)
+                        } else {
+                            hex_to_d2d_color(&cfg.karaoke_hex, 1.0)
+                        };
 
                         let is_active = offset == 0;
                         let is_instrumental = line.text.trim() == "♪"
@@ -337,221 +358,190 @@ pub unsafe fn render_window_d2d(
                                     cfg,
                                 );
                             } else {
-                                let start_ms = line.time.as_millis() as u64;
-                                let elapsed_line = adjusted_ms.saturating_sub(start_ms);
+                                let karaoke_mode = cfg.karaoke_mode.trim().to_lowercase();
+                                let use_karaoke = match karaoke_mode.as_str() {
+                                    "always" => true,
+                                    "never" => false,
+                                    _ => line.is_karaoke, // "auto"
+                                };
 
-                                let mut current_x = 15.0;
-                                let mut current_y = line_top;
-                                let line_height = active_font_size + 4.0;
-                                let mut accumulated_syl_time = 0u64;
+                                if !use_karaoke {
+                                    let mut current_x = 15.0;
+                                    let mut current_y = line_top;
+                                    let line_height = active_font_size + 4.0;
+                                    let mut render_data = Vec::new();
 
-                                let mut render_data = Vec::new();
+                                    for syl in &line.syllables {
+                                        let layout = engine.get_cached_text_layout(
+                                            &syl.text,
+                                            &cfg.font_family,
+                                            active_font_size,
+                                            true,
+                                            max_w,
+                                            line_height,
+                                        )?;
+                                        let mut metrics = DWRITE_TEXT_METRICS::default();
+                                        layout.GetMetrics(&mut metrics)?;
 
-                                for syl in &line.syllables {
-                                    let syl_start = accumulated_syl_time;
-                                    let syl_dur = syl.duration.as_millis().max(50) as u64;
-                                    accumulated_syl_time += syl_dur;
+                                        let is_word_token =
+                                            syl.text.chars().last().is_some_and(|c| {
+                                                c.is_alphanumeric() || c == '\'' || c == '`'
+                                            });
+                                        let _padding = if syl.text.ends_with(' ') {
+                                            0.0
+                                        } else if is_word_token {
+                                            (active_font_size * 0.25).max(6.0)
+                                        } else {
+                                            2.0
+                                        };
+                                        let syl_width = metrics.widthIncludingTrailingWhitespace;
 
-                                    let syl_progress = if elapsed_line >= syl_start {
-                                        ((elapsed_line - syl_start) as f32 / syl_dur as f32)
-                                            .clamp(0.0, 1.0)
-                                    } else {
-                                        0.0
-                                    };
+                                        if current_x + syl_width > max_w && current_x > 15.0 {
+                                            current_x = 15.0;
+                                            current_y += line_height;
+                                        }
 
-                                    let layout = engine.get_cached_text_layout(
-                                        &syl.text,
-                                        &cfg.font_family,
-                                        active_font_size,
-                                        true,
-                                        max_w,
-                                        line_height,
-                                    )?;
-                                    let mut metrics = DWRITE_TEXT_METRICS::default();
-                                    layout.GetMetrics(&mut metrics)?;
-
-                                    let is_word_token = syl.text.chars().last().is_some_and(|c| {
-                                        c.is_alphanumeric() || c == '\'' || c == '`'
-                                    });
-                                    let padding = if syl.text.ends_with(' ') {
-                                        0.0
-                                    } else if is_word_token {
-                                        (active_font_size * 0.25).max(6.0)
-                                    } else {
-                                        2.0
-                                    };
-                                    let syl_width =
-                                        metrics.widthIncludingTrailingWhitespace + padding;
-
-                                    if current_x + syl_width > max_w && current_x > 15.0 {
-                                        current_x = 15.0;
-                                        current_y += line_height;
+                                        render_data.push((current_x, current_y, layout));
+                                        current_x += syl_width;
                                     }
 
-                                    render_data.push(RenderSyl {
-                                        x: current_x,
-                                        y: current_y,
-                                        width: syl_width,
-                                        progress: syl_progress,
-                                        layout,
-                                    });
+                                    let total_box_height = (current_y - line_top) + line_height;
 
-                                    current_x += syl_width;
-                                }
-
-                                let total_box_height = (current_y - line_top) + line_height;
-
-                                for rs in &render_data {
-                                    let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
-                                    if is_current_syl {
-                                        continue;
+                                    for (x, y, layout) in &render_data {
+                                        draw_text_with_shadow(
+                                            target,
+                                            &reusable_brush,
+                                            layout,
+                                            *x,
+                                            *y,
+                                            &active_karaoke_color,
+                                            cfg,
+                                        );
                                     }
 
-                                    let syl_color = if rs.progress >= 1.0 {
-                                        active_karaoke_color
-                                    } else {
-                                        active_text_color
-                                    };
-                                    draw_text_with_shadow(
-                                        target,
-                                        &reusable_brush,
-                                        &rs.layout,
-                                        rs.x,
-                                        rs.y,
-                                        &syl_color,
-                                        cfg,
-                                    );
-                                }
+                                    if let Some(ref sub) = line.sub_text {
+                                        if !sub.is_empty() {
+                                            let font_size_sub_capped =
+                                                cfg.font_size_sub.clamp(14, 40) as f32;
+                                            let sub_layout = engine.get_cached_text_layout(
+                                                sub,
+                                                &cfg.font_family,
+                                                font_size_sub_capped,
+                                                false,
+                                                width_f - 30.0,
+                                                font_size_sub_capped + 20.0,
+                                            )?;
+                                            let sub_color = hex_to_d2d_color(&cfg.sub_hex, 0.95);
+                                            let sub_y = (line_top + total_box_height + 1.0)
+                                                .min(height_f - font_size_sub_capped - 20.0);
+                                            draw_text_with_shadow(
+                                                target,
+                                                &reusable_brush,
+                                                &sub_layout,
+                                                15.0,
+                                                sub_y,
+                                                &sub_color,
+                                                cfg,
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    let start_ms = line.time.as_millis() as u64;
+                                    let elapsed_line = adjusted_ms.saturating_sub(start_ms);
 
-                                for rs in &render_data {
-                                    let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
-                                    if !is_current_syl {
-                                        continue;
+                                    let mut current_x = 15.0;
+                                    let mut current_y = line_top;
+                                    let line_height = active_font_size + 4.0;
+                                    let mut accumulated_syl_time = 0u64;
+
+                                    let mut render_data = Vec::new();
+
+                                    for syl in &line.syllables {
+                                        let syl_start = accumulated_syl_time;
+                                        let syl_dur = syl.duration.as_millis().max(50) as u64;
+                                        accumulated_syl_time += syl_dur;
+
+                                        let syl_progress = if elapsed_line >= syl_start {
+                                            ((elapsed_line - syl_start) as f32 / syl_dur as f32)
+                                                .clamp(0.0, 1.0)
+                                        } else {
+                                            0.0
+                                        };
+
+                                        let layout = engine.get_cached_text_layout(
+                                            &syl.text,
+                                            &cfg.font_family,
+                                            active_font_size,
+                                            true,
+                                            max_w,
+                                            line_height,
+                                        )?;
+                                        let mut metrics = DWRITE_TEXT_METRICS::default();
+                                        layout.GetMetrics(&mut metrics)?;
+
+                                        let is_word_token =
+                                            syl.text.chars().last().is_some_and(|c| {
+                                                c.is_alphanumeric() || c == '\'' || c == '`'
+                                            });
+                                        let _padding = if syl.text.ends_with(' ') {
+                                            0.0
+                                        } else if is_word_token {
+                                            (active_font_size * 0.25).max(6.0)
+                                        } else {
+                                            2.0
+                                        };
+                                        let syl_width = metrics.widthIncludingTrailingWhitespace;
+
+                                        if current_x + syl_width > max_w && current_x > 15.0 {
+                                            current_x = 15.0;
+                                            current_y += line_height;
+                                        }
+
+                                        render_data.push(RenderSyl {
+                                            x: current_x,
+                                            y: current_y,
+                                            width: syl_width,
+                                            progress: syl_progress,
+                                            layout,
+                                        });
+
+                                        current_x += syl_width;
                                     }
 
-                                    let effect = cfg.karaoke_effect.trim().to_lowercase();
+                                    let total_box_height = (current_y - line_top) + line_height;
 
-                                    match effect.as_str() {
-                                        "none" => {
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &rs.layout,
-                                                rs.x,
-                                                rs.y,
-                                                &active_karaoke_color,
-                                                cfg,
-                                            );
+                                    for rs in &render_data {
+                                        let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
+                                        if is_current_syl {
+                                            continue;
                                         }
-                                        "fade" => {
-                                            let blended = lerp_d2d_color(
-                                                &active_text_color,
-                                                &active_karaoke_color,
-                                                rs.progress,
-                                            );
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &rs.layout,
-                                                rs.x,
-                                                rs.y,
-                                                &blended,
-                                                cfg,
-                                            );
-                                        }
-                                        "wave" => {
-                                            let bounce = (rs.progress * std::f32::consts::PI).sin();
-                                            let y_shift = -(bounce * 6.0);
-                                            let blended = lerp_d2d_color(
-                                                &active_text_color,
-                                                &active_karaoke_color,
-                                                rs.progress,
-                                            );
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &rs.layout,
-                                                rs.x,
-                                                rs.y + y_shift,
-                                                &blended,
-                                                cfg,
-                                            );
-                                        }
-                                        "sweep" | "kf" => {
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &rs.layout,
-                                                rs.x,
-                                                rs.y,
-                                                &active_text_color,
-                                                cfg,
-                                            );
-                                            let fill_w = rs.width * rs.progress;
-                                            if fill_w > 0.0 {
-                                                let clip_rect = D2D_RECT_F {
-                                                    left: rs.x,
-                                                    top: rs.y - 2.0,
-                                                    right: rs.x + fill_w,
-                                                    bottom: rs.y + line_height + 2.0,
-                                                };
-                                                target.PushAxisAlignedClip(
-                                                    &clip_rect,
-                                                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                                );
-                                                reusable_brush.SetColor(&active_karaoke_color);
-                                                target.DrawTextLayout(
-                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
-                                                    &rs.layout,
-                                                    &reusable_brush,
-                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                                );
-                                                target.PopAxisAlignedClip();
-                                            }
-                                        }
-                                        "glow" => {
-                                            let glow_color = D2D1_COLOR_F {
-                                                a: 0.35,
-                                                ..active_karaoke_color
-                                            };
-                                            reusable_brush.SetColor(&glow_color);
-                                            for (dx, dy) in
-                                                [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)]
-                                            {
-                                                target.DrawTextLayout(
-                                                    D2D_POINT_2F {
-                                                        x: rs.x + dx,
-                                                        y: rs.y + dy,
-                                                    },
-                                                    &rs.layout,
-                                                    &reusable_brush,
-                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                                );
-                                            }
-                                            reusable_brush.SetColor(&active_karaoke_color);
-                                            target.DrawTextLayout(
-                                                D2D_POINT_2F { x: rs.x, y: rs.y },
-                                                &rs.layout,
-                                                &reusable_brush,
-                                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                            );
-                                        }
-                                        _ => {
-                                            let pop_factor = if rs.progress < 0.25 {
-                                                let t = rs.progress / 0.25;
-                                                (t * std::f32::consts::FRAC_PI_2).sin()
-                                            } else {
-                                                let t = (rs.progress - 0.25) / 0.75;
-                                                (1.0 - t).powi(3)
-                                            };
 
-                                            let scale_val = 1.0 + (pop_factor * 0.08);
-                                            let y_shift = -(pop_factor * 2.0);
+                                        let syl_color = if rs.progress >= 1.0 {
+                                            active_karaoke_color
+                                        } else {
+                                            active_text_color
+                                        };
+                                        draw_text_with_shadow(
+                                            target,
+                                            &reusable_brush,
+                                            &rs.layout,
+                                            rs.x,
+                                            rs.y,
+                                            &syl_color,
+                                            cfg,
+                                        );
+                                    }
 
-                                            let cx = rs.x + (rs.width / 2.0);
-                                            let cy = rs.y + (line_height / 2.0);
+                                    for rs in &render_data {
+                                        let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
+                                        if !is_current_syl {
+                                            continue;
+                                        }
 
-                                            if cfg.shadow_enabled {
+                                        let effect = cfg.karaoke_effect.trim().to_lowercase();
+
+                                        match effect.as_str() {
+                                            "none" => {
                                                 draw_text_with_shadow(
                                                     target,
                                                     &reusable_brush,
@@ -562,62 +552,286 @@ pub unsafe fn render_window_d2d(
                                                     cfg,
                                                 );
                                             }
+                                            "fade" => {
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "wave" => {
+                                                let bounce =
+                                                    (rs.progress * std::f32::consts::PI).sin();
+                                                let y_shift = -(bounce * 6.0);
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y + y_shift,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "sweep" | "kf" => {
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &active_text_color,
+                                                    cfg,
+                                                );
+                                                let fill_w = rs.width * rs.progress;
+                                                if fill_w > 0.0 {
+                                                    let clip_rect = D2D_RECT_F {
+                                                        left: rs.x,
+                                                        top: rs.y - 2.0,
+                                                        right: rs.x + fill_w,
+                                                        bottom: rs.y + line_height + 2.0,
+                                                    };
+                                                    target.PushAxisAlignedClip(
+                                                        &clip_rect,
+                                                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                    );
+                                                    reusable_brush.SetColor(&active_karaoke_color);
+                                                    target.DrawTextLayout(
+                                                        D2D_POINT_2F { x: rs.x, y: rs.y },
+                                                        &rs.layout,
+                                                        &reusable_brush,
+                                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                    );
+                                                    target.PopAxisAlignedClip();
+                                                }
+                                            }
+                                            "pulse" => {
+                                                // Smooth scale-up-then-down breathing pulse,
+                                                // centered on the syllable box, no vertical
+                                                // shift (distinct from "pop"'s lift+shrink).
+                                                let pulse =
+                                                    (rs.progress * std::f32::consts::PI).sin();
+                                                let scale_val = 1.0 + (pulse * 0.15);
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
 
-                                            let transform = Matrix3x2 {
-                                                M11: scale_val,
-                                                M12: 0.0,
-                                                M21: 0.0,
-                                                M22: scale_val,
-                                                M31: cx * (1.0 - scale_val),
-                                                M32: cy * (1.0 - scale_val) + y_shift,
-                                            };
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
 
-                                            target.SetTransform(&transform);
-                                            reusable_brush.SetColor(&active_karaoke_color);
+                                                if cfg.shadow_enabled {
+                                                    draw_text_with_shadow(
+                                                        target,
+                                                        &reusable_brush,
+                                                        &rs.layout,
+                                                        rs.x,
+                                                        rs.y,
+                                                        &blended,
+                                                        cfg,
+                                                    );
+                                                }
 
-                                            target.DrawTextLayout(
-                                                D2D_POINT_2F { x: rs.x, y: rs.y },
-                                                &rs.layout,
-                                                &reusable_brush,
-                                                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                            );
+                                                let transform = Matrix3x2 {
+                                                    M11: scale_val,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: scale_val,
+                                                    M31: cx * (1.0 - scale_val),
+                                                    M32: cy * (1.0 - scale_val),
+                                                };
 
-                                            let identity = Matrix3x2 {
-                                                M11: 1.0,
-                                                M12: 0.0,
-                                                M21: 0.0,
-                                                M22: 1.0,
-                                                M31: 0.0,
-                                                M32: 0.0,
-                                            };
-                                            target.SetTransform(&identity);
+                                                target.SetTransform(&transform);
+                                                reusable_brush.SetColor(&blended);
+
+                                                target.DrawTextLayout(
+                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
+                                                    &rs.layout,
+                                                    &reusable_brush,
+                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                );
+
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+                                            }
+                                            "shake" => {
+                                                // Horizontal jitter that decays as the
+                                                // syllable's progress advances toward 1.0,
+                                                // settling once it's fully highlighted.
+                                                let jitter = (rs.progress * 40.0).sin()
+                                                    * (1.0 - rs.progress)
+                                                    * 2.0;
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x + jitter,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "rise" => {
+                                                // Syllable slides up into place from a few
+                                                // pixels below while crossfading to the
+                                                // karaoke color, settling at progress = 1.0.
+                                                let rise_amount = (1.0 - rs.progress).powi(2) * 8.0;
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y + rise_amount,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "glow" => {
+                                                let glow_color = D2D1_COLOR_F {
+                                                    a: 0.35,
+                                                    ..active_karaoke_color
+                                                };
+                                                reusable_brush.SetColor(&glow_color);
+                                                for (dx, dy) in [
+                                                    (-1.0, 0.0),
+                                                    (1.0, 0.0),
+                                                    (0.0, -1.0),
+                                                    (0.0, 1.0),
+                                                ] {
+                                                    target.DrawTextLayout(
+                                                        D2D_POINT_2F {
+                                                            x: rs.x + dx,
+                                                            y: rs.y + dy,
+                                                        },
+                                                        &rs.layout,
+                                                        &reusable_brush,
+                                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                    );
+                                                }
+                                                reusable_brush.SetColor(&active_karaoke_color);
+                                                target.DrawTextLayout(
+                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
+                                                    &rs.layout,
+                                                    &reusable_brush,
+                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                );
+                                            }
+                                            _ => {
+                                                let pop_factor = if rs.progress < 0.25 {
+                                                    let t = rs.progress / 0.25;
+                                                    (t * std::f32::consts::FRAC_PI_2).sin()
+                                                } else {
+                                                    let t = (rs.progress - 0.25) / 0.75;
+                                                    (1.0 - t).powi(3)
+                                                };
+
+                                                let scale_val = 1.0 + (pop_factor * 0.08);
+                                                let y_shift = -(pop_factor * 2.0);
+
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
+
+                                                if cfg.shadow_enabled {
+                                                    draw_text_with_shadow(
+                                                        target,
+                                                        &reusable_brush,
+                                                        &rs.layout,
+                                                        rs.x,
+                                                        rs.y,
+                                                        &active_karaoke_color,
+                                                        cfg,
+                                                    );
+                                                }
+
+                                                let transform = Matrix3x2 {
+                                                    M11: scale_val,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: scale_val,
+                                                    M31: cx * (1.0 - scale_val),
+                                                    M32: cy * (1.0 - scale_val) + y_shift,
+                                                };
+
+                                                target.SetTransform(&transform);
+                                                reusable_brush.SetColor(&active_karaoke_color);
+
+                                                target.DrawTextLayout(
+                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
+                                                    &rs.layout,
+                                                    &reusable_brush,
+                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                );
+
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+                                            }
                                         }
                                     }
-                                }
 
-                                if let Some(ref sub) = line.sub_text {
-                                    if !sub.is_empty() {
-                                        let font_size_sub_capped =
-                                            (cfg.font_size_sub.min(40)) as f32;
-                                        let sub_layout = engine.get_cached_text_layout(
-                                            sub,
-                                            &cfg.font_family,
-                                            font_size_sub_capped,
-                                            false,
-                                            width_f - 30.0,
-                                            font_size_sub_capped + 20.0,
-                                        )?;
-                                        let sub_color = hex_to_d2d_color(&cfg.sub_hex, 0.95);
-                                        let sub_y = line_top + total_box_height + 2.0;
-                                        draw_text_with_shadow(
-                                            target,
-                                            &reusable_brush,
-                                            &sub_layout,
-                                            15.0,
-                                            sub_y,
-                                            &sub_color,
-                                            cfg,
-                                        );
+                                    if let Some(ref sub) = line.sub_text {
+                                        if !sub.is_empty() {
+                                            let font_size_sub_capped =
+                                                cfg.font_size_sub.clamp(14, 40) as f32;
+                                            let sub_layout = engine.get_cached_text_layout(
+                                                sub,
+                                                &cfg.font_family,
+                                                font_size_sub_capped,
+                                                false,
+                                                width_f - 30.0,
+                                                font_size_sub_capped + 20.0,
+                                            )?;
+                                            let sub_color = hex_to_d2d_color(&cfg.sub_hex, 0.95);
+                                            let sub_y = (line_top + total_box_height + 1.0)
+                                                .min(height_f - font_size_sub_capped - 20.0);
+                                            draw_text_with_shadow(
+                                                target,
+                                                &reusable_brush,
+                                                &sub_layout,
+                                                15.0,
+                                                sub_y,
+                                                &sub_color,
+                                                cfg,
+                                            );
+                                        }
                                     }
                                 }
                             }

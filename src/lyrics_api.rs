@@ -1,11 +1,15 @@
 use crate::dprintln;
 use crate::providers::amll::fetch_amll_lyrics;
+use crate::providers::binimum::fetch_binimum_lyrics;
+use crate::providers::boidu::fetch_boidu_lyrics;
 use crate::providers::lrclib::fetch_lrclib_lyrics;
 use crate::providers::lrcmux::fetch_lrcmux_lyrics;
 use crate::providers::lyricsplus::fetch_lyricsplus_lyrics;
+use crate::providers::musixmatch::fetch_musixmatch_lyrics;
 use crate::providers::netease::fetch_netease_lyrics;
 use crate::providers::translation::translate_text;
 use crate::providers::ttmllib::fetch_ttmllib_lyrics;
+#[allow(unused_imports)]
 use crate::providers::unison::fetch_unison_lyrics;
 use reqwest::Client;
 use std::time::{Duration, Instant};
@@ -38,6 +42,20 @@ fn get_response_preview(content: &str) -> String {
     } else {
         joined
     }
+}
+
+/// A successful TTML result from any provider (provider name + raw content + optional plain).
+struct TtmlHit {
+    content: String,
+    plain: Option<String>,
+    provider: String,
+}
+
+/// A successful synced LRC result from any provider.
+struct LrcHit {
+    content: String,
+    plain: Option<String>,
+    provider: String,
 }
 
 #[derive(Clone)]
@@ -88,360 +106,358 @@ impl LyricsClient {
         );
 
         // ====================================================================
-        // PASS 1: TTML Syllable-Level Karaoke Priority Pass (LyricsPlus Primary)
+        // SINGLE ROUND: fire every provider exactly once, concurrently.
+        // Each provider's response is classified as a TTML hit and/or an
+        // LRC hit right where it lands, instead of re-querying every
+        // overlapping provider a second time (the old PASS1/PASS2 split
+        // did the same HTTP calls twice for LyricsPlus/LRCMux/Unison/TTMLLIB
+        // whenever PASS 1 found no TTML at all).
         // ====================================================================
-        dprintln!("\n🚀 [PASS 1] Querying Word-by-Word TTML Karaoke Providers:");
+        dprintln!("\n🚀 [FETCH] Querying all lyrics providers concurrently (single round):");
 
-        // 1. LyricsPlus API (PRIMARY PROVIDER)
-        let t0 = Instant::now();
-        dprintln!("  ├─ [1/5] LyricsPlus (lyricsplus.prjktla.my.id) ..... ");
-        match fetch_lyricsplus_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.as_ref().is_some_and(|s| is_ttml_format(s)) => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : TTML XML (Word-by-Word Karaoke)");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: LyricsPlus (TTML Karaoke) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "LyricsPlus (TTML)".to_string()));
+        let client = &self.reqwest_client;
+
+        let lyricsplus_fut = async {
+            let t = Instant::now();
+            match fetch_lyricsplus_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ LyricsPlus {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "LyricsPlus (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "LyricsPlus".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ LyricsPlus ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
             }
-            Ok(res) => {
-                let prev = res.synced.as_deref().unwrap_or("empty");
-                dprintln!(
-                    "❌ FAILED ({}ms) -> Non-TTML payload: \"{}\"",
-                    t0.elapsed().as_millis(),
-                    get_response_preview(prev)
-                );
+        };
+
+        let amll_fut = async {
+            let t = Instant::now();
+            match fetch_amll_lyrics(client, title, artist).await {
+                Ok(amll_ttml) if is_ttml_format(&amll_ttml) => {
+                    dprintln!(
+                        "  ├─ AMLL TTML ✅ ({}ms) | {} bytes",
+                        t.elapsed().as_millis(),
+                        amll_ttml.len()
+                    );
+                    Some(TtmlHit {
+                        content: amll_ttml,
+                        plain: None,
+                        provider: "AMLL".into(),
+                    })
+                }
+                Ok(_) => {
+                    dprintln!("  ├─ AMLL ❌ ({}ms) non-TTML", t.elapsed().as_millis());
+                    None
+                }
+                Err(e) => {
+                    dprintln!("  ├─ AMLL ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    None
+                }
             }
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
+        };
+
+        let lrcmux_fut = async {
+            let t = Instant::now();
+            match fetch_lrcmux_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ LRCMux {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "LRCMux (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "LRCMux".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ LRCMux ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
+
+        let unison_fut = async {
+            // Unison provider disabled
+            (None, None)
+        };
+
+        let ttmllib_fut = async {
+            let t = Instant::now();
+            match fetch_ttmllib_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ TTMLLIB {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "TTMLLIB (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "TTMLLIB".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ TTMLLIB ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
+
+        let musixmatch_fut = async {
+            let t = Instant::now();
+            match fetch_musixmatch_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ Musixmatch {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "Musixmatch (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "Musixmatch".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ Musixmatch ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
+
+        let binimum_fut = async {
+            let t = Instant::now();
+            match fetch_binimum_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ Binimum {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "Binimum (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "Binimum".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ Binimum ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
+
+        let boidu_fut = async {
+            let t = Instant::now();
+            match fetch_boidu_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res.synced.as_ref().is_some_and(|s| is_ttml_format(s));
+                    dprintln!(
+                        "  ├─ Boidu {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "Boidu (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "Boidu".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ Boidu ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
+
+        let lrclib_fut = async {
+            let t = Instant::now();
+            match fetch_lrclib_lyrics(client, title, artist, album, duration).await {
+                Ok(res) if res.synced.is_some() => {
+                    let synced = res.synced.unwrap();
+                    dprintln!(
+                        "  ├─ LRCLIB LRC ✅ ({}ms) | {} bytes",
+                        t.elapsed().as_millis(),
+                        synced.len()
+                    );
+                    Some(LrcHit {
+                        content: synced,
+                        plain: res.plain,
+                        provider: "LRCLIB".into(),
+                    })
+                }
+                Ok(_) => {
+                    dprintln!("  ├─ LRCLIB ❌ ({}ms) no synced", t.elapsed().as_millis());
+                    None
+                }
+                Err(e) => {
+                    dprintln!("  ├─ LRCLIB ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    None
+                }
+            }
+        };
+
+        let netease_fut = async {
+            let t = Instant::now();
+            match fetch_netease_lyrics(client, title, artist).await {
+                Ok(res) if res.synced.is_some() => {
+                    let synced = res.synced.unwrap();
+                    dprintln!(
+                        "  └─ NetEase LRC ✅ ({}ms) | {} bytes",
+                        t.elapsed().as_millis(),
+                        synced.len()
+                    );
+                    Some(LrcHit {
+                        content: synced,
+                        plain: res.plain,
+                        provider: "NetEase".into(),
+                    })
+                }
+                Ok(_) => {
+                    dprintln!("  └─ NetEase ❌ ({}ms) no synced", t.elapsed().as_millis());
+                    None
+                }
+                Err(e) => {
+                    dprintln!("  └─ NetEase ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    None
+                }
+            }
+        };
+
+        let (lp_res, amll_res, mx_res, bini_res, boi_res, lm_res, un_res, tt_res, lr_res, ne_res) = tokio::join!(
+            lyricsplus_fut,
+            amll_fut,
+            musixmatch_fut,
+            binimum_fut,
+            boidu_fut,
+            lrcmux_fut,
+            unison_fut,
+            ttmllib_fut,
+            lrclib_fut,
+            netease_fut
+        );
+
+        let (lp_ttml, lp_lrc) = lp_res;
+        let (mx_ttml, mx_lrc) = mx_res;
+        let (bini_ttml, bini_lrc) = bini_res;
+        let (boi_ttml, boi_lrc) = boi_res;
+        let (lm_ttml, lm_lrc) = lm_res;
+        let (un_ttml, un_lrc) = un_res;
+        let (tt_ttml, tt_lrc) = tt_res;
+
+        let ttml_result = lp_ttml
+            .or(amll_res)
+            .or(mx_ttml)
+            .or(bini_ttml)
+            .or(boi_ttml)
+            .or(lm_ttml)
+            .or(un_ttml)
+            .or(tt_ttml);
+
+        if let Some(hit) = ttml_result {
+            dprintln!(
+                "┌───────────────────────────────────────────────────────────────────────────────┐"
+            );
+            dprintln!(
+                "│ 🎉 [MATCH FOUND] Provider: {} | Total Time: {}ms",
+                hit.provider,
+                overall_start.elapsed().as_millis()
+            );
+            dprintln!("│    Preview: \"{}\"", get_response_preview(&hit.content));
+            dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
+            return Ok((hit.content, hit.plain, hit.provider));
         }
 
-        // 2. AMLL Dev API
-        let t0 = Instant::now();
-        dprintln!("  ├─ [2/5] AMLL Dev (api.amll.dev) ................... ");
-        match fetch_amll_lyrics(&self.reqwest_client, title, artist).await {
-            Ok(amll_ttml) if is_ttml_format(&amll_ttml) => {
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&amll_ttml);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, amll_ttml.len());
-                dprintln!("  │    ├─ Format  : TTML XML (Word-by-Word Karaoke)");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: AMLL (TTML Karaoke) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((amll_ttml, None, "AMLL".to_string()));
-            }
-            Ok(res) => {
-                let prev = get_response_preview(&res);
-                dprintln!(
-                    "❌ FAILED ({}ms) -> Non-TTML payload: \"{}\"",
-                    t0.elapsed().as_millis(),
-                    prev
-                );
-            }
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
+        let lrc_result = lp_lrc
+            .or(mx_lrc)
+            .or(bini_lrc)
+            .or(boi_lrc)
+            .or(lm_lrc)
+            .or(un_lrc)
+            .or(tt_lrc)
+            .or(lr_res)
+            .or(ne_res);
 
-        // 3. LRCMux API
-        let t0 = Instant::now();
-        dprintln!("  ├─ [3/5] LRCMux (api.lrcmux.dev) .................. ");
-        match fetch_lrcmux_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.as_ref().is_some_and(|s| is_ttml_format(s)) => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : TTML XML (Word-by-Word Karaoke)");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: LRCMux (TTML Karaoke) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "LRCMux (TTML)".to_string()));
-            }
-            Ok(res) => {
-                let prev = res.synced.as_deref().unwrap_or("empty");
-                dprintln!(
-                    "❌ FAILED ({}ms) -> Non-TTML payload: \"{}\"",
-                    t0.elapsed().as_millis(),
-                    get_response_preview(prev)
-                );
-            }
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        // 4. Unison API
-        let t0 = Instant::now();
-        dprintln!("  ├─ [4/5] Unison (unison.boidu.dev) ................. ");
-        match fetch_unison_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.as_ref().is_some_and(|s| is_ttml_format(s)) => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : TTML XML (Word-by-Word Karaoke)");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: Unison (TTML Karaoke) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "Unison (TTML)".to_string()));
-            }
-            Ok(res) => {
-                let prev = res.synced.as_deref().unwrap_or("empty");
-                dprintln!(
-                    "❌ FAILED ({}ms) -> Non-TTML payload: \"{}\"",
-                    t0.elapsed().as_millis(),
-                    get_response_preview(prev)
-                );
-            }
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        // 5. TTMLLIB API
-        let t0 = Instant::now();
-        dprintln!("  └─ [5/5] TTMLLIB (ttmllib.xyz) ..................... ");
-        match fetch_ttmllib_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.as_ref().is_some_and(|s| is_ttml_format(s)) => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : TTML XML (Word-by-Word Karaoke)");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: TTMLLIB (TTML Karaoke) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "TTMLLIB (TTML)".to_string()));
-            }
-            Ok(res) => {
-                let prev = res.synced.as_deref().unwrap_or("empty");
-                dprintln!(
-                    "❌ FAILED ({}ms) -> Non-TTML payload: \"{}\"",
-                    t0.elapsed().as_millis(),
-                    get_response_preview(prev)
-                );
-            }
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        // ====================================================================
-        // PASS 2: Synced LRC Line-Level Fallback Pass (LyricsPlus Primary)
-        // ====================================================================
-        dprintln!("\n🔄 [PASS 2] Falling Back to Line-Synced LRC Providers:");
-
-        let t0 = Instant::now();
-        dprintln!("  ├─ [1/6] LyricsPlus (Synced LRC) .................. ");
-        match fetch_lyricsplus_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: LyricsPlus (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "LyricsPlus".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        let t0 = Instant::now();
-        dprintln!("  ├─ [2/6] LRCMux (Synced LRC) ....................... ");
-        match fetch_lrcmux_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: LRCMux (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "LRCMux".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        let t0 = Instant::now();
-        dprintln!("  ├─ [3/6] Unison (Synced LRC) ....................... ");
-        match fetch_unison_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: Unison (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "Unison".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        let t0 = Instant::now();
-        dprintln!("  ├─ [4/6] TTMLLIB (Synced LRC) ...................... ");
-        match fetch_ttmllib_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: TTMLLIB (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "TTMLLIB".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        let t0 = Instant::now();
-        dprintln!("  ├─ [5/6] LRCLIB (lrclib.net) ....................... ");
-        match fetch_lrclib_lyrics(&self.reqwest_client, title, artist, album, duration).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: LRCLIB (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "LRCLIB".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
-        }
-
-        let t0 = Instant::now();
-        dprintln!("  └─ [6/6] NetEase Cloud Music (music.163.com) ....... ");
-        match fetch_netease_lyrics(&self.reqwest_client, title, artist).await {
-            Ok(res) if res.synced.is_some() => {
-                let synced = res.synced.unwrap();
-                let dt = t0.elapsed().as_millis();
-                let prev = get_response_preview(&synced);
-                dprintln!("✅ SUCCESS ({}ms) | {} bytes", dt, synced.len());
-                dprintln!("  │    ├─ Format  : Synced Line LRC");
-                dprintln!("  │    └─ Preview : \"{}\"", prev);
-                dprintln!("┌───────────────────────────────────────────────────────────────────────────────┐");
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: NetEase (Synced LRC) | Total Time: {}ms",
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((synced, res.plain, "NetEase".to_string()));
-            }
-            Ok(_) => dprintln!(
-                "❌ FAILED ({}ms) -> No synced LRC data",
-                t0.elapsed().as_millis()
-            ),
-            Err(e) => dprintln!(
-                "❌ FAILED ({}ms) -> Response: {}",
-                t0.elapsed().as_millis(),
-                e
-            ),
+        if let Some(hit) = lrc_result {
+            dprintln!(
+                "┌───────────────────────────────────────────────────────────────────────────────┐"
+            );
+            dprintln!(
+                "│ 🎉 [MATCH FOUND] Provider: {} (Synced LRC) | Total Time: {}ms",
+                hit.provider,
+                overall_start.elapsed().as_millis()
+            );
+            dprintln!("│    Preview: \"{}\"", get_response_preview(&hit.content));
+            dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
+            return Ok((hit.content, hit.plain, hit.provider));
         }
 
         dprintln!(
-            "┌───────────────────────────────────────────────────────────────────────────────┐"
+            "\n┌───────────────────────────────────────────────────────────────────────────────┐"
         );
         dprintln!(
             "│ ⚠️ [ALL PROVIDERS FAILED] No synced lyrics available | Time: {}ms",

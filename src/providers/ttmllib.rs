@@ -1,6 +1,7 @@
 use crate::providers::http_debug::http_get_with_debug;
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize)]
 struct TtmllibSearchResult {
@@ -18,6 +19,80 @@ struct TtmllibSearchResult {
 pub struct LyricsResult {
     pub synced: Option<String>,
     pub plain: Option<String>,
+}
+
+/// Shared KPOE-style lyrics-array -> LRC text converter. Several providers
+/// (LyricsPlus, LRCMux's /compat/kpoe endpoint, ...) return lyrics as a
+/// JSON array of `{ text|words|line, time|startTime|start|t, ... }` objects
+/// instead of a plain LRC/TTML string. Kept here (rather than duplicated
+/// per-provider) so every provider that hits this shape parses it the
+/// same way instead of silently dropping valid lyrics because a provider's
+/// response struct only expected a plain string field.
+pub fn convert_kpoe_array_to_lrc(lines_arr: &[Value]) -> Option<String> {
+    let mut lrc_lines = Vec::new();
+
+    for item in lines_arr {
+        let text = item
+            .get("text")
+            .or_else(|| item.get("words"))
+            .or_else(|| item.get("line"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        let time_ms = item
+            .get("time")
+            .or_else(|| item.get("startTime"))
+            .or_else(|| item.get("start"))
+            .or_else(|| item.get("t"))
+            .and_then(|v| {
+                if let Some(f) = v.as_f64() {
+                    if f < 10000.0 {
+                        Some((f * 1000.0) as u64)
+                    } else {
+                        Some(f as u64)
+                    }
+                } else if let Some(u) = v.as_u64() {
+                    if u < 10000 {
+                        Some(u * 1000)
+                    } else {
+                        Some(u)
+                    }
+                } else if let Some(s) = v.as_str() {
+                    if let Ok(f) = s.parse::<f64>() {
+                        if f < 10000.0 {
+                            Some((f * 1000.0) as u64)
+                        } else {
+                            Some(f as u64)
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+        if let Some(ms_val) = time_ms {
+            let total_secs = ms_val / 1000;
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            let centis = (ms_val % 1000) / 10;
+            let time_tag = format!("[{:02}:{:02}.{:02}]", mins, secs, centis);
+
+            if !text.is_empty() {
+                lrc_lines.push(format!("{} {}", time_tag, text));
+            } else {
+                lrc_lines.push(time_tag);
+            }
+        }
+    }
+
+    if lrc_lines.is_empty() {
+        None
+    } else {
+        Some(lrc_lines.join("\n"))
+    }
 }
 
 pub async fn fetch_ttmllib_lyrics(
@@ -44,7 +119,19 @@ pub async fn fetch_ttmllib_lyrics(
         dur_val
     );
 
-    if let Ok(text) = http_get_with_debug(client, &get_url, "TTMLLIB /api/get").await {
+    // Try /api/get and /api/search concurrently instead of sequentially —
+    // /api/get is preferred, /api/search is the fallback, but there's no
+    // reason to wait for /api/get to finish before starting /api/search.
+    let search_url = format!(
+        "https://ttmllib.xyz/api/search?track_name={}&artist_name={}",
+        urlencoding::encode(clean_title),
+        urlencoding::encode(artist)
+    );
+    let get_fut = http_get_with_debug(client, &get_url, "TTMLLIB /api/get");
+    let search_fut = http_get_with_debug(client, &search_url, "TTMLLIB /api/search");
+    let (get_resp, search_resp) = tokio::join!(get_fut, search_fut);
+
+    if let Ok(text) = get_resp {
         if text.trim().starts_with('{') {
             if let Ok(res) = serde_json::from_str::<TtmllibSearchResult>(&text) {
                 let synced = res
@@ -61,14 +148,7 @@ pub async fn fetch_ttmllib_lyrics(
         }
     }
 
-    // 2. Fallback to /api/search (keyword search)
-    let search_url = format!(
-        "https://ttmllib.xyz/api/search?track_name={}&artist_name={}",
-        urlencoding::encode(clean_title),
-        urlencoding::encode(artist)
-    );
-
-    if let Ok(text) = http_get_with_debug(client, &search_url, "TTMLLIB /api/search").await {
+    if let Ok(text) = search_resp {
         if text.trim().starts_with('[') {
             if let Ok(items) = serde_json::from_str::<Vec<TtmllibSearchResult>>(&text) {
                 if let Some(res) = items.into_iter().next() {
