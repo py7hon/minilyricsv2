@@ -5,7 +5,7 @@ use crate::render::render_window_d2d;
 use crate::tray::{
     add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT, ID_MENU_LOCK,
     ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SIZE_LARGE,
-    ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, WM_TRAYICON,
+    ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, ID_MENU_TRIM_MEMORY, WM_TRAYICON,
 };
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -47,10 +47,12 @@ static mut SURFACE_CACHE: Option<SurfaceCache> = None;
 // (and therefore skip the expensive UpdateLayeredWindow composite) when
 // nothing on screen would actually change this tick.
 static mut LAST_PAINTED_INDEX: usize = usize::MAX;
+static mut LAST_PAINTED_POS_MS: u64 = u64::MAX;
 // Counter for the 33ms WM_TIMER ticks so we can do periodic (every ~2s)
 // housekeeping like re-asserting HWND_TOPMOST without doing it every frame.
 static mut TOPMOST_TICK_COUNTER: u32 = 0;
 const TOPMOST_REASSERT_TICKS: u32 = 60; // ~2 seconds at 33ms/tick
+static mut IDLE_TRIM_COUNTER: u32 = 0;
 
 pub unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
@@ -85,14 +87,11 @@ pub unsafe extern "system" fn wnd_proc(
                     };
 
                     let active_playing = s.media.is_playing && !s.media.title.is_empty();
+                    let current_pos_ms = s.media.position_ms;
+                    let pos_changed = current_pos_ms != LAST_PAINTED_POS_MS;
 
                     let index_changed = s.current_index != LAST_PAINTED_INDEX;
 
-                    // Only the active line's *word-level* karaoke timing needs
-                    // a fresh paint every tick (the fill color/pop animation
-                    // progresses continuously). A plain single-syllable line
-                    // just sitting on screen doesn't change frame to frame,
-                    // so there's nothing worth compositing.
                     let active_line_is_karaoke = {
                         let mode = s.config.karaoke_mode.trim().to_lowercase();
                         match mode.as_str() {
@@ -109,15 +108,24 @@ pub unsafe extern "system" fn wnd_proc(
                     should_invalidate = still_animating
                         || s.is_loading
                         || index_changed
-                        || (active_playing && active_line_is_karaoke);
+                        || (active_playing && active_line_is_karaoke && pos_changed);
 
                     if should_invalidate {
                         LAST_PAINTED_INDEX = s.current_index;
+                        LAST_PAINTED_POS_MS = current_pos_ms;
                     }
                 }
             }
             if should_invalidate {
                 let _ = InvalidateRect(hwnd, None, false);
+                IDLE_TRIM_COUNTER = 0;
+            } else {
+                IDLE_TRIM_COUNTER += 1;
+                if IDLE_TRIM_COUNTER == 15
+                    || (IDLE_TRIM_COUNTER > 15 && IDLE_TRIM_COUNTER.is_multiple_of(90))
+                {
+                    crate::utils::trim_working_set();
+                }
             }
 
             // Periodically re-assert TOPMOST so fullscreen / borderless games
@@ -186,6 +194,8 @@ pub unsafe extern "system" fn wnd_proc(
                         s.offset_ms = 0;
                     }
                 }
+            } else if id == ID_MENU_TRIM_MEMORY {
+                crate::utils::trim_working_set();
             } else if id == ID_MENU_EXIT {
                 let _ = DestroyWindow(hwnd);
             }

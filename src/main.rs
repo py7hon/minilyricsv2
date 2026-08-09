@@ -9,12 +9,14 @@ mod lyrics_api;
 mod providers;
 mod render;
 mod tray;
+mod utils;
 mod window;
 
 use crate::app_state::{AppState, APP_STATE};
 use crate::config::load_or_create_config;
 use crate::gsmtc::spawn_media_monitor;
 use crate::lyrics_api::LyricsClient;
+use crate::utils::trim_working_set;
 use crate::window::{create_main_window, run_event_loop};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,6 +50,14 @@ async fn main() {
 
     let _hwnd = create_main_window();
 
+    if app_state
+        .lock()
+        .map(|s| s.config.auto_trim_memory)
+        .unwrap_or(true)
+    {
+        trim_working_set();
+    }
+
     let state_clone = app_state.clone();
     let media_handle_clone = media_handle.clone();
 
@@ -55,7 +65,9 @@ async fn main() {
         let mut current_title = String::new();
         let mut current_artist = String::new();
         let mut current_album = String::new();
-        let mut ticker = tokio::time::interval(Duration::from_millis(30));
+        let mut last_trim_time = Instant::now();
+        let mut last_playing = false;
+        let mut ticker = tokio::time::interval(Duration::from_millis(50));
 
         loop {
             ticker.tick().await;
@@ -65,6 +77,24 @@ async fn main() {
             } else {
                 continue;
             };
+
+            let (auto_trim, trim_interval) = if let Ok(s) = state_clone.lock() {
+                (s.config.auto_trim_memory, s.config.trim_interval_secs)
+            } else {
+                (true, 60)
+            };
+
+            if trim_interval > 0 && last_trim_time.elapsed() >= Duration::from_secs(trim_interval) {
+                if auto_trim {
+                    trim_working_set();
+                }
+                last_trim_time = Instant::now();
+            }
+
+            if auto_trim && last_playing && !media.is_playing {
+                trim_working_set();
+            }
+            last_playing = media.is_playing;
 
             let mut request_fetch = false;
             let mut fetch_title = String::new();
@@ -200,6 +230,10 @@ async fn main() {
                         }
                         println!("[Main] Lyrics error: {}", e);
                     }
+                }
+
+                if auto_trim {
+                    trim_working_set();
                 }
             }
         }

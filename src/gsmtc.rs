@@ -127,7 +127,7 @@ pub fn spawn_media_monitor() -> Arc<Mutex<MediaInfo>> {
                     }
                 }
             }
-            sleep(Duration::from_millis(0)).await;
+            sleep(Duration::from_millis(50)).await;
         }
     });
 

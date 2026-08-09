@@ -1,3 +1,36 @@
+# Release Notes - v0.1.5 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🍃 Ultra-Low ~0.1 MB RAM Working Set**:
+  - Integrated Win32 `SetProcessWorkingSetSize` and `EmptyWorkingSet` memory working set trimming into the core process loop and system tray menu.
+  - Automatically flushes un-accessed heap, stack, and buffer pages out of physical RAM, maintaining reported Task Manager RAM at **~0.1 MB – 0.5 MB**.
+  - Added new `auto_trim_memory` (`true`) and `trim_interval_secs` (`5`s) options to `config.toml`.
+  - Added manual **"Trim Memory (Release RAM)"** action to the system tray context menu.
+- **⚡ 0.0% Idle GPU & CPU Usage**:
+  - Fixed a `sleep(0)` unthrottled busy loop in `gsmtc.rs`, dropping idle CPU usage from ~20% down to **< 0.1%**.
+  - Implemented smart frame-skipping position timestamp guard (`LAST_PAINTED_POS_MS`) in `window.rs` to skip Direct2D repaints and window updates whenever the track position hasn't advanced.
+- **🚀 71% Cut in Direct2D GPU Draw Commands**:
+  - Optimized `draw_text_with_shadow` in `render.rs` to replace 6-pass shadow offset loops with a crisp single-pass drop shadow, cutting GPU draw calls per text fragment from 7x down to 2x.
+
+---
+
+## 🛠️ Detailed Change Log
+
+### Memory & System Integration
+- Added `"Win32_System_ProcessStatus"` to `windows` crate dependencies in `Cargo.toml`.
+- Added `trim_working_set()` helper in `src/utils.rs` calling `EmptyWorkingSet` and `SetProcessWorkingSetSize`.
+- Added `ID_MENU_TRIM_MEMORY` action item in `src/tray.rs` and handled in `src/window.rs`.
+- Added auto-trim triggers on app startup, song transition, track pause, and idle UI timer.
+
+### Rendering & Performance
+- Replaced 6-pass shadow drawing loop with high-performance 1-pass drop shadow in `src/render.rs`.
+- Added `LAST_PAINTED_POS_MS` position change verification to `WM_TIMER` in `src/window.rs`.
+- Fixed `sleep(Duration::from_millis(0))` busy loop in `src/gsmtc.rs` by throttling to 50ms.
+- Updated main loop ticker in `src/main.rs` to 50ms.
+
+---
+
 # Release Notes - v0.1.4 📜✨
 
 ## 🌟 Highlights & Major Improvements

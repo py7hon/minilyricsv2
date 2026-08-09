@@ -70,6 +70,21 @@ pub struct StyleConfig {
     /// more expensive (more sample copies drawn). Roughly 1.0-6.0 is sane.
     #[serde(default = "default_shadow_blur")]
     pub shadow_blur: f32,
+
+    /// Automatically trim Working Set memory on song change, pause, and startup
+    #[serde(default = "default_auto_trim_memory")]
+    pub auto_trim_memory: bool,
+    /// Periodic working set memory trim interval in seconds (0 to disable)
+    #[serde(default = "default_trim_interval_secs")]
+    pub trim_interval_secs: u64,
+}
+
+fn default_auto_trim_memory() -> bool {
+    true
+}
+
+fn default_trim_interval_secs() -> u64 {
+    5
 }
 
 fn default_karaoke_v2_hex() -> String {
@@ -130,6 +145,8 @@ impl Default for StyleConfig {
             shadow_offset_x: 1.5,
             shadow_offset_y: 1.5,
             shadow_blur: 3.0,
+            auto_trim_memory: true,
+            trim_interval_secs: 5,
         }
     }
 }

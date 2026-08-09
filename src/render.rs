@@ -32,33 +32,23 @@ unsafe fn draw_text_with_shadow(
     cfg: &StyleConfig,
 ) {
     if cfg.shadow_enabled {
-        let alpha = (cfg.shadow_opacity * 0.35).clamp(0.05, 0.45);
+        let alpha = (cfg.shadow_opacity * 0.70).clamp(0.1, 0.8);
         let shadow_color = hex_to_d2d_color(&cfg.shadow_hex, alpha);
         brush.SetColor(&shadow_color);
 
-        let ox = cfg.shadow_offset_x * 0.5;
-        let oy = cfg.shadow_offset_y * 0.5;
+        let ox = cfg.shadow_offset_x.clamp(0.5, 3.0);
+        let oy = cfg.shadow_offset_y.clamp(0.5, 3.0);
 
-        let offsets = [
-            (-0.8, -0.8),
-            (0.8, -0.8),
-            (-0.8, 0.8),
-            (0.8, 0.8),
-            (0.0, 1.0),
-            (1.0, 1.0),
-        ];
-
-        for (dx, dy) in offsets {
-            target.DrawTextLayout(
-                D2D_POINT_2F {
-                    x: x + dx + ox,
-                    y: y + dy + oy,
-                },
-                layout,
-                brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-            );
-        }
+        // High-performance single-pass drop shadow (cuts D2D GPU draw calls by 71%)
+        target.DrawTextLayout(
+            D2D_POINT_2F {
+                x: x + ox,
+                y: y + oy,
+            },
+            layout,
+            brush,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
     }
     brush.SetColor(text_color);
     target.DrawTextLayout(
