@@ -35,6 +35,10 @@ struct AmllGetResponse {
     lyrics: Option<String>,
     #[serde(default, rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
+    #[serde(default)]
+    ttml: Option<String>,
+    #[serde(default, rename = "ttmlLyrics")]
+    ttml_lyrics: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +47,10 @@ struct AmllGetDetail {
     lyrics: Option<String>,
     #[serde(default, rename = "syncedLyrics")]
     synced_lyrics: Option<String>,
+    #[serde(default)]
+    ttml: Option<String>,
+    #[serde(default, rename = "ttmlLyrics")]
+    ttml_lyrics: Option<String>,
 }
 
 fn parse_amll_items(v: &serde_json::Value) -> Option<Vec<AmllItem>> {
@@ -92,7 +100,8 @@ pub async fn fetch_amll_lyrics(
     let mut found_id = None;
 
     for body in [search_r0, search_r1].into_iter().flatten() {
-        if body.trim().starts_with('{') {
+        let trimmed = body.trim();
+        if trimmed.starts_with('{') {
             if let Ok(search_res) = serde_json::from_str::<AmllSearchResponse>(&body) {
                 if let Some(data_val) = search_res.data {
                     if let Some(items) = parse_amll_items(&data_val) {
@@ -102,6 +111,15 @@ pub async fn fetch_amll_lyrics(
                                 break;
                             }
                         }
+                    }
+                }
+            }
+        } else if trimmed.starts_with('[') {
+            if let Ok(items) = serde_json::from_str::<Vec<AmllItem>>(&body) {
+                if !items.is_empty() {
+                    if let Some(id_str) = items[0].get_id_str() {
+                        found_id = Some(id_str);
+                        break;
                     }
                 }
             }
@@ -116,9 +134,17 @@ pub async fn fetch_amll_lyrics(
                 let ttml = get_res
                     .data
                     .as_ref()
-                    .and_then(|d| d.lyrics.clone().or(d.synced_lyrics.clone()))
+                    .and_then(|d| {
+                        d.lyrics
+                            .clone()
+                            .or_else(|| d.synced_lyrics.clone())
+                            .or_else(|| d.ttml.clone())
+                            .or_else(|| d.ttml_lyrics.clone())
+                    })
                     .or(get_res.lyrics)
-                    .or(get_res.synced_lyrics);
+                    .or(get_res.synced_lyrics)
+                    .or(get_res.ttml)
+                    .or(get_res.ttml_lyrics);
 
                 if let Some(ttml_str) = ttml {
                     if !ttml_str.trim().is_empty() {
@@ -139,9 +165,17 @@ pub async fn fetch_amll_lyrics(
             let ttml = get_res
                 .data
                 .as_ref()
-                .and_then(|d| d.lyrics.clone().or(d.synced_lyrics.clone()))
+                .and_then(|d| {
+                    d.lyrics
+                        .clone()
+                        .or_else(|| d.synced_lyrics.clone())
+                        .or_else(|| d.ttml.clone())
+                        .or_else(|| d.ttml_lyrics.clone())
+                })
                 .or(get_res.lyrics)
-                .or(get_res.synced_lyrics);
+                .or(get_res.synced_lyrics)
+                .or(get_res.ttml)
+                .or(get_res.ttml_lyrics);
 
             if let Some(ttml_str) = ttml {
                 if !ttml_str.trim().is_empty() {

@@ -107,10 +107,22 @@ shadow_blur = 3.0
 ```
 
 ### 🎭 Karaoke Animation Modes (`karaoke_effect`)
-- `"wave"`: Smooth vertical bounce & color transition *(Recommended, lightweight)*.
+- `"star_bounce"` (alias `"star"`, `"ball"`): KaraFX / ASS-style bouncing star indicator with 360° rotating particle explosion sparkles *(Recommended, anime-style)*.
+- `"zoom"`: Smooth zoom expansion peak.
+- `"pulse"`: Breathing scale pulse in/out.
+- `"wave"`: Smooth vertical bounce & color transition.
+- `"bounce"`: Playful spring drop from above.
+- `"slide"`: Glides in smoothly from the left into place.
+- `"rise"`: Slides up from below while fading to color.
+- `"tilt"`: Playful rotation tilt angle while sung.
+- `"stretch"`: Cartoony squish & stretch elastic effect.
+- `"shake"`: Horizontal jitter that settles into place.
+- `"shimmer"`: Bright flash of light fading to highlight color.
+- `"neon"`: Vibrant RGB rainbow spectrum shift.
+- `"float"`: Ethereal floating vertical hover wave.
 - `"pop"`: Dynamic scale-up and lift transform effect.
 - `"fade"`: Smooth color crossfade transition.
-- `"sweep"` (or `"kf"`): Left-to-right fill wipe animation.
+- `"sweep"` (or `"kf"`): ASS/SSA `\kf`-style left-to-right fill wipe.
 - `"glow"`: Highlighted halo effect surrounding active syllables.
 - `"none"`: Instant color swap with zero motion animation.
 

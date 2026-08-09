@@ -1,3 +1,36 @@
+# Release Notes - v0.1.4 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **⭐ ASS / KaraFX Bouncing Star & Particle Explosion (`star_bounce`)**:
+  - Added a KaraFX / ASS anime karaoke-style bouncing star indicator (`★`) with smooth ease-out sine trajectory curves and word pop animations.
+  - Added a **360° Rotating Particle Explosion System**: 5 sparkling stars (`✦`, `✧`, `✨`) burst outward radially, rotate in 2D space, scale up, and shrink into fine stardust as each word is sung.
+  - Added precision word center touchdown and graceful post-landing dissolve/fade-away inside the word.
+- **🔤 Complete XML Entity Unescaping & Contraction Suffix Parsing**:
+  - Implemented comprehensive XML entity unescaping (`&apos;`, `&quot;`, `&amp;`, `&lt;`, `&gt;`, `&#39;`, `&#x27;`, etc.).
+  - Fixed AMLL & Apple Music TTML missing suffix issue (`wasn'` $\rightarrow$ `wasn't`, `you'` $\rightarrow$ `you're`) by capturing untagged inter-span text between `</span>` and `<span` tags while normalizing multi-space XML indentation into single spaces.
+- **🎨 8 New Modern Karaoke Animation Effects**:
+  - Added `star_bounce` (alias `star`, `ball`), `zoom`, `bounce`, `slide`, `tilt`, `stretch`, `shimmer`, `neon`, and `float` animation modes to `config.toml`.
+- **⚡ Zero-Lag Karaoke Active Syllable Timing**:
+  - Replaced dead-zone syllable progress filtering with active index targeting (`render_data.position(|r| r.progress < 1.0)`), guaranteeing instantaneous, lag-free rendering across rapid word transitions.
+
+---
+
+## 🛠️ Detailed Change Log
+
+### Rendering & Direct2D Engine
+- Added `star_bounce` effect with 360-degree rotating ASS KaraFX particle burst system.
+- Added 8 new karaoke effect modes (`zoom`, `bounce`, `slide`, `tilt`, `stretch`, `shimmer`, `neon`, `float`).
+- Replaced linear bounce trajectory with Ease-Out Sine curves (`sin(t * PI / 2)`) and quadratic dissolve fade-outs.
+- Fixed active syllable selection dead zones between syllable boundaries.
+
+### TTML & LRC Parser
+- Added `unescape_xml_entities()` for named and numeric XML entities in TTML parser.
+- Added inter-span and trailing text extraction in `parse_ttml()` to prevent contraction truncation (`wasn't`, `you're`).
+- Added `clean_inter_xml_text()` helper to normalize multi-line XML formatting indentation into single spaces.
+
+---
+
 # Release Notes - v0.1.3 📜✨
 
 ## 🌟 Highlights & Major Improvements

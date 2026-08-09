@@ -509,10 +509,13 @@ pub unsafe fn render_window_d2d(
                                     }
 
                                     let total_box_height = (current_y - line_top) + line_height;
+                                    let active_idx = render_data
+                                        .iter()
+                                        .position(|r| r.progress < 1.0)
+                                        .unwrap_or_else(|| render_data.len().saturating_sub(1));
 
-                                    for rs in &render_data {
-                                        let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
-                                        if is_current_syl {
+                                    for (i, rs) in render_data.iter().enumerate() {
+                                        if i == active_idx {
                                             continue;
                                         }
 
@@ -532,15 +535,211 @@ pub unsafe fn render_window_d2d(
                                         );
                                     }
 
-                                    for rs in &render_data {
-                                        let is_current_syl = rs.progress > 0.0 && rs.progress < 1.0;
-                                        if !is_current_syl {
-                                            continue;
-                                        }
-
+                                    if active_idx < render_data.len() {
+                                        let rs = &render_data[active_idx];
                                         let effect = cfg.karaoke_effect.trim().to_lowercase();
 
                                         match effect.as_str() {
+                                            "star_bounce" | "star" | "ball" => {
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+
+                                                let arc =
+                                                    (rs.progress * std::f32::consts::PI).sin();
+                                                let word_lift = -(arc * 3.5);
+                                                let pop_scale = 1.0 + (arc * 0.05);
+
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
+
+                                                let word_transform = Matrix3x2 {
+                                                    M11: pop_scale,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: pop_scale,
+                                                    M31: cx * (1.0 - pop_scale),
+                                                    M32: cy * (1.0 - pop_scale) + word_lift,
+                                                };
+
+                                                target.SetTransform(&word_transform);
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+
+                                                // Silky smooth trajectory: ease-out sine horizontal motion across full word duration
+                                                let prev_center_x = if active_idx > 0 {
+                                                    render_data[active_idx - 1].x
+                                                        + (render_data[active_idx - 1].width / 2.0)
+                                                } else {
+                                                    rs.x - 10.0
+                                                };
+                                                let curr_center_x = rs.x + (rs.width / 2.0);
+
+                                                let star_size =
+                                                    (active_font_size * 0.50).clamp(12.0, 22.0);
+                                                let center_y_base =
+                                                    rs.y + (line_height / 2.0) - (star_size * 0.55);
+
+                                                let t = rs.progress.clamp(0.0, 1.0);
+                                                let ease_x =
+                                                    (t * std::f32::consts::FRAC_PI_2).sin();
+                                                let star_x = prev_center_x
+                                                    + (curr_center_x - prev_center_x) * ease_x;
+                                                let bounce_h = (t * std::f32::consts::PI).sin()
+                                                    * (active_font_size * 0.48).clamp(10.0, 18.0);
+                                                let star_y = center_y_base - bounce_h;
+
+                                                // Smooth quad-ease fade-out resting on the word center
+                                                let star_alpha = if t <= 0.70 {
+                                                    1.0
+                                                } else {
+                                                    let fade_t = (t - 0.70) / 0.30;
+                                                    1.0 - (fade_t * fade_t)
+                                                };
+                                                let star_color = D2D1_COLOR_F {
+                                                    r: active_karaoke_color.r,
+                                                    g: active_karaoke_color.g,
+                                                    b: active_karaoke_color.b,
+                                                    a: active_karaoke_color.a * star_alpha,
+                                                };
+
+                                                // Dynamic ASS / KaraFX Particle Sparkle Burst System
+                                                if rs.progress > 0.01 && rs.progress < 0.99 {
+                                                    let t = rs.progress;
+                                                    let sparkle_alpha =
+                                                        (arc * 0.95).clamp(0.0, 1.0);
+                                                    let word_cx = rs.x + (rs.width / 2.0);
+                                                    let word_cy = rs.y + (line_height / 2.0);
+
+                                                    let particles = [
+                                                        (
+                                                            "✦", 0.42, -135.0f32, 22.0f32, 4.5f32,
+                                                            1.0f32, 0.88f32, 0.35f32,
+                                                        ),
+                                                        (
+                                                            "✧", 0.38, -45.0f32, 24.0f32, -5.0f32,
+                                                            0.45f32, 0.92f32, 1.00f32,
+                                                        ),
+                                                        (
+                                                            "✦", 0.45, -90.0f32, 28.0f32, 3.0f32,
+                                                            1.00f32, 0.96f32, 0.65f32,
+                                                        ),
+                                                        (
+                                                            "✧", 0.36, 140.0f32, 18.0f32, 6.0f32,
+                                                            0.95f32, 0.55f32, 0.85f32,
+                                                        ),
+                                                        (
+                                                            "✦", 0.35, 40.0f32, 20.0f32, -4.0f32,
+                                                            0.70f32, 1.00f32, 0.50f32,
+                                                        ),
+                                                    ];
+
+                                                    for (
+                                                        glyph,
+                                                        font_scale,
+                                                        angle_deg,
+                                                        max_dist,
+                                                        rot_speed,
+                                                        r,
+                                                        g,
+                                                        b,
+                                                    ) in particles
+                                                    {
+                                                        let rad = angle_deg.to_radians();
+                                                        let dist = t * max_dist;
+                                                        let p_x = word_cx + rad.cos() * dist;
+                                                        let p_y = word_cy + rad.sin() * dist
+                                                            - (arc * 8.0);
+
+                                                        let p_scale =
+                                                            (t * std::f32::consts::PI).sin() * 1.25;
+                                                        let angle_rot = t * rot_speed;
+                                                        let cos_r = angle_rot.cos();
+                                                        let sin_r = angle_rot.sin();
+
+                                                        let p_color = D2D1_COLOR_F {
+                                                            r,
+                                                            g,
+                                                            b,
+                                                            a: sparkle_alpha
+                                                                * (1.0 - (t - 0.5).abs() * 0.8)
+                                                                    .clamp(0.0, 1.0),
+                                                        };
+
+                                                        let p_layout = engine
+                                                            .get_cached_text_layout(
+                                                                glyph,
+                                                                &cfg.font_family,
+                                                                (active_font_size * font_scale)
+                                                                    .clamp(8.0, 18.0),
+                                                                true,
+                                                                20.0,
+                                                                20.0,
+                                                            )?;
+
+                                                        let p_transform = Matrix3x2 {
+                                                            M11: cos_r * p_scale,
+                                                            M12: sin_r * p_scale,
+                                                            M21: -sin_r * p_scale,
+                                                            M22: cos_r * p_scale,
+                                                            M31: p_x * (1.0 - cos_r * p_scale)
+                                                                + p_y * (sin_r * p_scale),
+                                                            M32: p_y * (1.0 - cos_r * p_scale)
+                                                                - p_x * (sin_r * p_scale),
+                                                        };
+
+                                                        target.SetTransform(&p_transform);
+                                                        draw_text_with_shadow(
+                                                            target,
+                                                            &reusable_brush,
+                                                            &p_layout,
+                                                            p_x - 6.0,
+                                                            p_y - 6.0,
+                                                            &p_color,
+                                                            cfg,
+                                                        );
+                                                    }
+                                                    target.SetTransform(&identity);
+                                                }
+
+                                                // Main bouncing star fading away at edges
+                                                let star_layout = engine.get_cached_text_layout(
+                                                    "★",
+                                                    &cfg.font_family,
+                                                    (active_font_size * 0.52).clamp(13.0, 24.0),
+                                                    true,
+                                                    25.0,
+                                                    25.0,
+                                                )?;
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &star_layout,
+                                                    star_x - 5.0,
+                                                    star_y,
+                                                    &star_color,
+                                                    cfg,
+                                                );
+                                            }
                                             "none" => {
                                                 draw_text_with_shadow(
                                                     target,
@@ -746,6 +945,247 @@ pub unsafe fn render_window_d2d(
                                                     &rs.layout,
                                                     &reusable_brush,
                                                     D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                );
+                                            }
+                                            "zoom" | "scale" => {
+                                                let zoom_peak =
+                                                    (rs.progress * std::f32::consts::PI).sin();
+                                                let scale_val = 1.0 + (zoom_peak * 0.22);
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
+
+                                                if cfg.shadow_enabled {
+                                                    draw_text_with_shadow(
+                                                        target,
+                                                        &reusable_brush,
+                                                        &rs.layout,
+                                                        rs.x,
+                                                        rs.y,
+                                                        &blended,
+                                                        cfg,
+                                                    );
+                                                }
+
+                                                let transform = Matrix3x2 {
+                                                    M11: scale_val,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: scale_val,
+                                                    M31: cx * (1.0 - scale_val),
+                                                    M32: cy * (1.0 - scale_val),
+                                                };
+
+                                                target.SetTransform(&transform);
+                                                reusable_brush.SetColor(&blended);
+                                                target.DrawTextLayout(
+                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
+                                                    &rs.layout,
+                                                    &reusable_brush,
+                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                                                );
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+                                            }
+                                            "bounce" | "drop" => {
+                                                let bounce =
+                                                    (rs.progress * std::f32::consts::PI * 2.0)
+                                                        .sin()
+                                                        .abs()
+                                                        * (1.0 - rs.progress)
+                                                        * 9.0;
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y - bounce,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "slide" | "slide_right" => {
+                                                let offset_x = (1.0 - rs.progress).powi(2) * -12.0;
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x + offset_x,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                            }
+                                            "tilt" | "rotate" => {
+                                                let angle_rad =
+                                                    (rs.progress * std::f32::consts::PI * 2.0)
+                                                        .sin()
+                                                        * 0.10;
+                                                let cos_a = angle_rad.cos();
+                                                let sin_a = angle_rad.sin();
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+
+                                                let transform = Matrix3x2 {
+                                                    M11: cos_a,
+                                                    M12: sin_a,
+                                                    M21: -sin_a,
+                                                    M22: cos_a,
+                                                    M31: cx * (1.0 - cos_a) + cy * sin_a,
+                                                    M32: cy * (1.0 - cos_a) - cx * sin_a,
+                                                };
+
+                                                target.SetTransform(&transform);
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+                                            }
+                                            "stretch" | "squish" => {
+                                                let phase =
+                                                    (rs.progress * std::f32::consts::PI).sin();
+                                                let scale_x = 1.0 + (phase * 0.25);
+                                                let scale_y = 1.0 - (phase * 0.18);
+                                                let cx = rs.x + (rs.width / 2.0);
+                                                let cy = rs.y + (line_height / 2.0);
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+
+                                                let transform = Matrix3x2 {
+                                                    M11: scale_x,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: scale_y,
+                                                    M31: cx * (1.0 - scale_x),
+                                                    M32: cy * (1.0 - scale_y),
+                                                };
+
+                                                target.SetTransform(&transform);
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &blended,
+                                                    cfg,
+                                                );
+                                                let identity = Matrix3x2 {
+                                                    M11: 1.0,
+                                                    M12: 0.0,
+                                                    M21: 0.0,
+                                                    M22: 1.0,
+                                                    M31: 0.0,
+                                                    M32: 0.0,
+                                                };
+                                                target.SetTransform(&identity);
+                                            }
+                                            "shimmer" | "flash" => {
+                                                let flash_factor =
+                                                    (1.0 - rs.progress).powi(3) * 0.6;
+                                                let base_color = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                let flash_color = D2D1_COLOR_F {
+                                                    r: (base_color.r + flash_factor).min(1.0),
+                                                    g: (base_color.g + flash_factor).min(1.0),
+                                                    b: (base_color.b + flash_factor).min(1.0),
+                                                    a: 1.0,
+                                                };
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &flash_color,
+                                                    cfg,
+                                                );
+                                            }
+                                            "neon" | "rainbow" => {
+                                                let hue = (rs.progress * 3.0) % 1.0;
+                                                let r =
+                                                    ((hue * 6.0 - 3.0).abs() - 1.0).clamp(0.0, 1.0);
+                                                let g =
+                                                    (2.0 - (hue * 6.0 - 2.0).abs()).clamp(0.0, 1.0);
+                                                let b =
+                                                    (2.0 - (hue * 6.0 - 4.0).abs()).clamp(0.0, 1.0);
+                                                let rainbow_color =
+                                                    D2D1_COLOR_F { r, g, b, a: 1.0 };
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y,
+                                                    &rainbow_color,
+                                                    cfg,
+                                                );
+                                            }
+                                            "float" | "hover" => {
+                                                let float_y =
+                                                    (rs.progress * std::f32::consts::PI * 2.0)
+                                                        .sin()
+                                                        * -4.5;
+                                                let blended = lerp_d2d_color(
+                                                    &active_text_color,
+                                                    &active_karaoke_color,
+                                                    rs.progress,
+                                                );
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &rs.layout,
+                                                    rs.x,
+                                                    rs.y + float_y,
+                                                    &blended,
+                                                    cfg,
                                                 );
                                             }
                                             _ => {

@@ -31,16 +31,24 @@ pub struct StyleConfig {
     #[serde(default = "default_karaoke_mode")]
     pub karaoke_mode: String,
 
-    /// Per-word karaoke animation style. One of:
-    /// "pop"   - scale+lift the active word (heaviest, uses a D2D transform)
-    /// "pulse" - breathing scale in/out, no lift (uses a D2D transform)
-    /// "wave"  - vertical bounce, no matrix transform (cheap)
-    /// "rise"  - slides up into place from below while fading to color (cheap)
-    /// "shake" - horizontal jitter that settles as the syllable finishes (cheap)
-    /// "fade"  - crossfades base color -> karaoke color (cheapest with motion)
-    /// "sweep" (alias "kf") - ASS/SSA \kf-style left-to-right fill wipe
-    /// "glow"  - soft highlighted glow around the active word
-    /// "none"  - instant color swap only, no animation at all (lightest possible)
+    /// "star_bounce" (alias "star", "ball") - Bouncing star/ball indicator overhead above active word
+    /// "pop"       - scale+lift the active word (heaviest, uses a D2D transform)
+    /// "pulse"     - breathing scale in/out, no lift (uses a D2D transform)
+    /// "zoom"      - smooth zoom expansion peak then settles
+    /// "wave"      - vertical bounce wave curve
+    /// "bounce"    - playful spring drop bounce from above
+    /// "slide"     - slides in smoothly from the left
+    /// "rise"      - slides up into place from below while fading to color
+    /// "tilt"      - playful rotation tilt angle while sung
+    /// "stretch"   - cartoony squish & stretch elastic effect
+    /// "shake"     - horizontal jitter that settles as the syllable finishes
+    /// "shimmer"   - bright flash of light fading to highlight color
+    /// "neon"      - vibrant rainbow color spectrum shift
+    /// "float"     - floating vertical hover wave
+    /// "fade"      - crossfades base color -> karaoke color
+    /// "sweep"     (alias "kf") - ASS/SSA \kf-style left-to-right fill wipe
+    /// "glow"      - soft highlighted glow around the active word
+    /// "none"      - instant color swap only, no animation at all
     #[serde(default = "default_karaoke_effect")]
     pub karaoke_effect: String,
 

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,63 @@ pub struct LrcLine {
     pub style_name: String,
     pub is_karaoke: bool,
     pub singer_index: u8,
+}
+
+pub fn unescape_xml_entities(input: &str) -> String {
+    if !input.contains('&') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(amp_idx) = rest.find('&') {
+        out.push_str(&rest[..amp_idx]);
+        rest = &rest[amp_idx..];
+        if let Some(semi_idx) = rest.find(';') {
+            let entity = &rest[1..semi_idx];
+            let replacement: Option<Cow<'static, str>> = match entity {
+                "apos" | "rsquo" | "lsquo" => Some("'".into()),
+                "quot" | "rdquo" | "ldqu" | "ldquo" => Some("\"".into()),
+                "amp" => Some("&".into()),
+                "lt" => Some("<".into()),
+                "gt" => Some(">".into()),
+                "nbsp" => Some(" ".into()),
+                "ndash" => Some("–".into()),
+                "mdash" => Some("—".into()),
+                "hellip" => Some("…".into()),
+                "copy" => Some("©".into()),
+                "reg" => Some("®".into()),
+                _ => {
+                    if let Some(hex) = entity
+                        .strip_prefix("#x")
+                        .or_else(|| entity.strip_prefix("#X"))
+                    {
+                        u32::from_str_radix(hex, 16)
+                            .ok()
+                            .and_then(char::from_u32)
+                            .map(|c| c.to_string().into())
+                    } else if let Some(dec) = entity.strip_prefix('#') {
+                        dec.parse::<u32>()
+                            .ok()
+                            .and_then(char::from_u32)
+                            .map(|c| c.to_string().into())
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(rep) = replacement {
+                out.push_str(&rep);
+                rest = &rest[semi_idx + 1..];
+            } else {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        } else {
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str) -> u8 {
@@ -106,6 +164,31 @@ fn strip_xml_tags(input: &str) -> String {
     out
 }
 
+fn clean_inter_xml_text(raw: &str) -> Option<String> {
+    let clean = unescape_xml_entities(&strip_xml_tags(raw));
+    if !clean.chars().any(|c| !c.is_whitespace()) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut last_was_space = false;
+    for ch in clean.chars() {
+        if ch.is_whitespace() {
+            if !last_was_space {
+                out.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            last_was_space = false;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
     let mut lines = Vec::new();
     let mut pos = 0;
@@ -160,6 +243,9 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
         let mut full_text = String::new();
         let mut is_karaoke = false;
 
+        let p_tag_open_end = p_block.find('>').map(|i| i + 1).unwrap_or(0);
+        let mut prev_span_end = p_tag_open_end;
+
         let mut span_pos = 0;
         while let Some(s_start) = p_block[span_pos..].find("<span") {
             let abs_s_start = span_pos + s_start;
@@ -176,22 +262,45 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             let span_text_raw = &p_block[s_close_tag..s_end];
             span_pos = s_end + 7;
 
-            let span_text = strip_xml_tags(span_text_raw);
-            if span_text.is_empty() {
-                continue;
-            }
-
             let role_val = extract_xml_attr(tag_attrs, "ttm:role")
                 .or_else(|| extract_xml_attr(tag_attrs, "role"));
 
-            if let Some(role) = role_val {
-                let role_lower = role.to_lowercase();
-                if role_lower.contains("translation")
-                    || role_lower.contains("transliteration")
-                    || role_lower.contains("roman")
-                {
-                    continue;
+            let is_translation_span = role_val.as_deref().is_some_and(|role| {
+                let r = role.to_lowercase();
+                r.contains("translation") || r.contains("transliteration") || r.contains("roman")
+            });
+
+            // Capture untagged text appearing before this <span> tag (e.g. &apos;t or punctuation)
+            if abs_s_start > prev_span_end {
+                let inter_raw = &p_block[prev_span_end..abs_s_start];
+                if let Some(inter_clean) = clean_inter_xml_text(inter_raw) {
+                    let last_syl_ends_with_space = syllables
+                        .last()
+                        .is_some_and(|s: &Syllable| s.text.ends_with(' '));
+                    let to_add = if last_syl_ends_with_space && inter_clean.starts_with(' ') {
+                        inter_clean.trim_start()
+                    } else {
+                        &inter_clean
+                    };
+                    if !to_add.is_empty() {
+                        if let Some(last_syl) = syllables.last_mut() {
+                            last_syl.text.push_str(to_add);
+                        }
+                        full_text.push_str(to_add);
+                    }
                 }
+            }
+
+            prev_span_end = span_pos;
+
+            if is_translation_span {
+                continue;
+            }
+
+            let span_text = strip_xml_tags(span_text_raw);
+            let span_text = unescape_xml_entities(&span_text);
+            if span_text.is_empty() {
+                continue;
             }
 
             let after_span = &p_block[s_end + 7..];
@@ -228,8 +337,31 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             full_text.push_str(&final_span_text);
         }
 
+        // Capture untagged text after the last <span> tag (before </p>)
+        let p_content_end = p_block.rfind("</p>").unwrap_or(p_block.len());
+        if p_content_end > prev_span_end {
+            let trailing_raw = &p_block[prev_span_end..p_content_end];
+            if let Some(trailing_clean) = clean_inter_xml_text(trailing_raw) {
+                let last_syl_ends_with_space = syllables
+                    .last()
+                    .is_some_and(|s: &Syllable| s.text.ends_with(' '));
+                let to_add = if last_syl_ends_with_space && trailing_clean.starts_with(' ') {
+                    trailing_clean.trim_start()
+                } else {
+                    &trailing_clean
+                };
+                if !to_add.is_empty() {
+                    if let Some(last_syl) = syllables.last_mut() {
+                        last_syl.text.push_str(to_add);
+                    }
+                    full_text.push_str(to_add);
+                }
+            }
+        }
+
         if syllables.is_empty() {
             let raw_inner = strip_xml_tags(p_block);
+            let raw_inner = unescape_xml_entities(&raw_inner);
             if !raw_inner.trim().is_empty() {
                 let (syls, plain, inner_k) = parse_api_karaoke(&raw_inner);
                 syllables = syls;
@@ -606,5 +738,59 @@ mod tests {
         let lines = parse_lrc(ttml);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "If the world was ending");
+    }
+
+    #[test]
+    fn test_unescape_xml_entities() {
+        assert_eq!(
+            unescape_xml_entities("here&apos;s my number"),
+            "here's my number"
+        );
+        assert_eq!(
+            unescape_xml_entities("It&apos;s &quot;crazy&quot; &amp; fun"),
+            "It's \"crazy\" & fun"
+        );
+        assert_eq!(unescape_xml_entities("Fish &#38; Chips"), "Fish & Chips");
+        assert_eq!(unescape_xml_entities("It&#39;s work"), "It's work");
+        assert_eq!(unescape_xml_entities("It&#x27;s work"), "It's work");
+    }
+
+    #[test]
+    fn test_ttml_with_xml_entities() {
+        let ttml = r#"<tt><body><div>
+            <p begin="00:00:29.170" end="00:00:30.670">
+                <span begin="00:00:29.170" end="00:00:29.350">But </span>
+                <span begin="00:00:29.350" end="00:00:29.646">here&apos;s </span>
+                <span begin="00:00:29.646" end="00:00:29.900">my </span>
+                <span begin="00:00:29.900" end="00:00:30.670">number</span>
+            </p>
+        </div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "But here's my number");
+        assert_eq!(lines[0].syllables[1].text.trim(), "here's");
+    }
+
+    #[test]
+    fn test_ttml_unspanned_word_suffixes() {
+        let ttml = r#"<tt><body><div>
+            <p begin="00:00:17.00" end="00:00:19.00">
+                <span begin="00:00:17.00" end="00:00:17.20">I </span>
+                <span begin="00:00:17.20" end="00:00:17.60">wasn</span>&apos;t 
+                <span begin="00:00:17.60" end="00:00:18.00">looking </span>for this
+            </p>
+            <p begin="00:00:19.10" end="00:00:21.00">
+                <span begin="00:00:19.10" end="00:00:19.30">But </span>
+                <span begin="00:00:19.30" end="00:00:19.50">now </span>
+                <span begin="00:00:19.50" end="00:00:19.80">you</span>&apos;re 
+                <span begin="00:00:19.80" end="00:00:20.50">in my way</span>
+            </p>
+        </div></body></tt>"#;
+        let lines = parse_lrc(ttml);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text, "I wasn't looking for this");
+        assert_eq!(lines[0].syllables[1].text.trim(), "wasn't");
+        assert_eq!(lines[1].text, "But now you're in my way");
+        assert_eq!(lines[1].syllables[2].text.trim(), "you're");
     }
 }
