@@ -3,7 +3,7 @@
 > **A modern, lightweight, transparent floating lyrics overlay for Windows.**  
 > Powered by Rust, Direct2D/DirectWrite, Windows System Media Transport Controls (GSMTC), and multi-source TTML/LRC providers.
 
-![CI](https://github.com/py7hon/minilyricv2/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/py7hon/minilyricsv2/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-orange?logo=rust)
