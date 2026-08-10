@@ -21,7 +21,48 @@ fn parse_lyricsplus_response(text: &str) -> Option<LyricsResult> {
         });
     }
 
-    // 2. Check for syncedLyrics / synced string
+    // 2. Check for word-by-word karaoke array in "lyrics", "element", or "lines"
+    let lyrics_val = v
+        .get("lyrics")
+        .or_else(|| v.get("element"))
+        .or_else(|| v.get("lines"));
+
+    if let Some(arr_val) = lyrics_val {
+        if let Some(s) = arr_val.as_str() {
+            let trimmed_s = s.trim();
+            if trimmed_s.starts_with('[')
+                && (trimmed_s.contains("{\"") || trimmed_s.contains("{ \""))
+            {
+                if let Ok(parsed_arr) = serde_json::from_str::<Value>(trimmed_s) {
+                    if let Some(arr) = parsed_arr.as_array() {
+                        if let Some(lrc_content) = convert_kpoe_array_to_lrc(arr) {
+                            return Some(LyricsResult {
+                                synced: Some(lrc_content),
+                                plain: v
+                                    .get("plainLyrics")
+                                    .or_else(|| v.get("plain"))
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string()),
+                            });
+                        }
+                    }
+                }
+            }
+        } else if let Some(arr) = arr_val.as_array() {
+            if let Some(lrc_content) = convert_kpoe_array_to_lrc(arr) {
+                return Some(LyricsResult {
+                    synced: Some(lrc_content),
+                    plain: v
+                        .get("plainLyrics")
+                        .or_else(|| v.get("plain"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string()),
+                });
+            }
+        }
+    }
+
+    // 3. Fall back to syncedLyrics / synced string
     let synced_str = v
         .get("syncedLyrics")
         .or_else(|| v.get("synced"))
@@ -59,41 +100,6 @@ fn parse_lyricsplus_response(text: &str) -> Option<LyricsResult> {
         });
     }
 
-    // 3. Check if "lyrics" or "element" is a JSON array of KPOE lines
-    let lyrics_val = v.get("lyrics").or_else(|| v.get("element"));
-    if let Some(arr_val) = lyrics_val {
-        if let Some(s) = arr_val.as_str() {
-            let trimmed_s = s.trim();
-            if trimmed_s.starts_with('[')
-                && (trimmed_s.contains("{\"") || trimmed_s.contains("{ \""))
-            {
-                if let Ok(parsed_arr) = serde_json::from_str::<Value>(trimmed_s) {
-                    if let Some(arr) = parsed_arr.as_array() {
-                        if let Some(lrc_content) = convert_kpoe_array_to_lrc(arr) {
-                            return Some(LyricsResult {
-                                synced: Some(lrc_content),
-                                plain: None,
-                            });
-                        }
-                    }
-                }
-            }
-            if !trimmed_s.is_empty() {
-                return Some(LyricsResult {
-                    synced: Some(trimmed_s.to_string()),
-                    plain: None,
-                });
-            }
-        } else if let Some(arr) = arr_val.as_array() {
-            if let Some(lrc_content) = convert_kpoe_array_to_lrc(arr) {
-                return Some(LyricsResult {
-                    synced: Some(lrc_content),
-                    plain: None,
-                });
-            }
-        }
-    }
-
     None
 }
 
@@ -111,6 +117,10 @@ pub async fn fetch_lyricsplus_lyrics(
     let dur_val = duration.unwrap_or(0);
 
     let urls = [
+        format!(
+            "https://lyrics-api.boidu.dev/getLyrics?s={}&a={}&al={}&d={}",
+            enc_title, enc_artist, enc_album, dur_val
+        ),
         format!(
             "https://lyricsplus.prjktla.my.id/v2/lyrics/get?title={}&artist={}&album={}&duration={}",
             enc_title, enc_artist, enc_album, dur_val

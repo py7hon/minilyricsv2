@@ -41,7 +41,14 @@ pub async fn fetch_boidu_lyrics(
     album: &str,
     duration: Option<u64>,
 ) -> Result<LyricsResult, Box<dyn std::error::Error + Send + Sync>> {
-    let clean_title = title.split('(').next().unwrap_or(title).trim();
+    let clean_title = title
+        .split('(')
+        .next()
+        .unwrap_or(title)
+        .split('-')
+        .next()
+        .unwrap_or(title)
+        .trim();
     let dur_val = duration.unwrap_or(0);
 
     let url = format!(
@@ -52,21 +59,49 @@ pub async fn fetch_boidu_lyrics(
         dur_val
     );
 
-    let body = http_get_with_debug(client, &url, "Boidu").await?;
-
-    if !body.trim().is_empty() {
-        if body.contains("<tt") || body.contains("[0") {
-            return Ok(LyricsResult {
-                synced: Some(body),
-                plain: None,
-            });
-        }
-        if let Ok(val) = serde_json::from_str::<Value>(&body) {
-            if let Some(extracted) = extract_lyrics_str(&val) {
+    if let Ok(body) = http_get_with_debug(client, &url, "Boidu").await {
+        if !body.trim().is_empty() {
+            if body.contains("<tt") || body.contains("[0") {
                 return Ok(LyricsResult {
-                    synced: Some(extracted),
+                    synced: Some(body),
                     plain: None,
                 });
+            }
+            if let Ok(val) = serde_json::from_str::<Value>(&body) {
+                if let Some(extracted) = extract_lyrics_str(&val) {
+                    return Ok(LyricsResult {
+                        synced: Some(extracted),
+                        plain: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Secondary attempt without album constraint for faster/broader matching
+    if !album.is_empty() {
+        let fallback_url = format!(
+            "https://lyrics-api.boidu.dev/getLyrics?s={}&a={}&d={}",
+            urlencoding::encode(clean_title),
+            urlencoding::encode(artist),
+            dur_val
+        );
+        if let Ok(body) = http_get_with_debug(client, &fallback_url, "Boidu-Fallback").await {
+            if !body.trim().is_empty() {
+                if body.contains("<tt") || body.contains("[0") {
+                    return Ok(LyricsResult {
+                        synced: Some(body),
+                        plain: None,
+                    });
+                }
+                if let Ok(val) = serde_json::from_str::<Value>(&body) {
+                    if let Some(extracted) = extract_lyrics_str(&val) {
+                        return Ok(LyricsResult {
+                            synced: Some(extracted),
+                            plain: None,
+                        });
+                    }
+                }
             }
         }
     }

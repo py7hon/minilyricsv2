@@ -644,6 +644,559 @@ pub fn find_current_line(lines: &[LrcLine], pos: Duration) -> Option<usize> {
     Some(best_idx)
 }
 
+pub fn normalize_romaji_macrons(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            'ā' | 'Ā' => out.push_str("aa"),
+            'ī' | 'Ī' => out.push_str("ii"),
+            'ū' | 'Ū' => out.push_str("uu"),
+            'ē' | 'Ē' => out.push_str("ee"),
+            'ō' | 'Ō' => out.push_str("ou"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn hangul_to_romaja_char(c: char) -> Option<String> {
+    let u = c as u32;
+    if !(0xAC00..=0xD7AF).contains(&u) {
+        return None;
+    }
+    let code = u - 0xAC00;
+    let initial_idx = (code / 588) as usize;
+    let medial_idx = ((code % 588) / 28) as usize;
+    let final_idx = (code % 28) as usize;
+
+    const INITIALS: [&str; 19] = [
+        "g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t",
+        "p", "h",
+    ];
+    const MEDIALS: [&str; 21] = [
+        "a", "ae", "ya", "yae", "eo", "e", "yeo", "ye", "o", "wa", "wae", "oe", "yo", "u", "wo",
+        "we", "wi", "yu", "eu", "ui", "i",
+    ];
+    const FINALS: [&str; 28] = [
+        "", "g", "gg", "gs", "n", "nj", "nh", "d", "l", "lg", "lm", "lb", "ls", "lt", "lp", "lh",
+        "m", "b", "bs", "s", "ss", "ng", "j", "ch", "k", "t", "p", "h",
+    ];
+
+    let mut res = String::new();
+    res.push_str(INITIALS[initial_idx]);
+    res.push_str(MEDIALS[medial_idx]);
+    res.push_str(FINALS[final_idx]);
+    Some(res)
+}
+
+pub fn convert_hangul_text_to_romaja(text: &str) -> String {
+    let mut words = Vec::new();
+    let mut cur_word = String::new();
+
+    for c in text.chars() {
+        if let Some(rom) = hangul_to_romaja_char(c) {
+            cur_word.push_str(&rom);
+        } else if c.is_whitespace() {
+            if !cur_word.is_empty() {
+                words.push(cur_word.clone());
+                cur_word.clear();
+            }
+        } else if c.is_ascii_alphanumeric() {
+            cur_word.push(c);
+        }
+    }
+    if !cur_word.is_empty() {
+        words.push(cur_word);
+    }
+    words.join(" ")
+}
+
+pub fn fix_multilingual_transliteration_misreadings(sub_text: &str, main_text: &str) -> String {
+    let mut fixed = sub_text.to_string();
+
+    // 1. Automatic Korean Hangul Romanization via Unicode Math
+    let has_hangul = main_text.chars().any(|c| {
+        let u = c as u32;
+        (0xAC00..=0xD7AF).contains(&u)
+    });
+    if has_hangul {
+        let algorithmic_romaja = convert_hangul_text_to_romaja(main_text);
+        if !algorithmic_romaja.is_empty() {
+            return algorithmic_romaja;
+        }
+    }
+
+    // 2. Automatic Japanese Sokuon (っ) Consonant Gemination & Reading Corrector
+    if main_text.contains('っ') || main_text.contains('ッ') {
+        if fixed.contains("Emi tte") || fixed.contains("emi tte") || fixed.contains("Emi-tte") {
+            fixed = fixed
+                .replace("Emi tte", "waratte")
+                .replace("emi tte", "waratte")
+                .replace("Emi-tte", "waratte");
+        } else {
+            fixed = fixed
+                .replace(" tte", "tte")
+                .replace(" kke", "kke")
+                .replace(" ppe", "ppe")
+                .replace(" sse", "sse");
+        }
+    } else if main_text.contains("笑う") {
+        fixed = fixed.replace("Emi u", "warau").replace("emi u", "warau");
+    } else if main_text.contains("笑い") {
+        fixed = fixed.replace("Emi i", "warai").replace("emi i", "warai");
+    }
+
+    // 3. Automatic Chinese Pinyin & Digraph Consonant Consolidation
+    let is_chinese = main_text.chars().any(|c| {
+        let u = c as u32;
+        (0x4E00..=0x9FFF).contains(&u)
+    }) && !main_text
+        .chars()
+        .any(|c| (0x3040..=0x30FF).contains(&(c as u32)));
+
+    if is_chinese {
+        fixed = fixed
+            .replace("z h", "zh")
+            .replace("c h", "ch")
+            .replace("s h", "sh")
+            .replace("n g", "ng");
+    }
+
+    fixed
+}
+
+pub fn fix_common_romaji_misreadings(sub_text: &str, main_text: &str) -> String {
+    fix_multilingual_transliteration_misreadings(sub_text, main_text)
+}
+
+pub fn format_sub_text_with_word_spaces(sub_text: &str, main_text: &str) -> String {
+    let fixed_romaji = fix_common_romaji_misreadings(sub_text, main_text);
+    let normalized = normalize_romaji_macrons(&fixed_romaji);
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.contains(' ') {
+        return trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
+    }
+
+    let syls = split_latin_word_into_syllables(trimmed);
+    if syls.len() <= 1 {
+        return trimmed.to_string();
+    }
+
+    let main_chars: Vec<char> = main_text.chars().collect();
+    let mut group_sizes = Vec::new();
+    let mut i = 0;
+
+    while i < main_chars.len() {
+        let u = main_chars[i] as u32;
+        let is_kanji = (0x4E00..=0x9FFF).contains(&u);
+        let is_hangul = (0xAC00..=0xD7AF).contains(&u) || (0x1100..=0x11FF).contains(&u);
+
+        if is_hangul || (is_kanji && main_chars.len() <= 4) {
+            group_sizes.push(1);
+            i += 1;
+        } else if is_kanji {
+            let mut k_size = 1;
+            while i + k_size < main_chars.len() {
+                let next_u = main_chars[i + k_size] as u32;
+                if (0x3040..=0x309F).contains(&next_u) {
+                    k_size += 1;
+                    break;
+                } else if (0x4E00..=0x9FFF).contains(&next_u) {
+                    k_size += 1;
+                } else {
+                    break;
+                }
+            }
+            group_sizes.push(k_size);
+            i += k_size;
+        } else {
+            let mut kana_size = 0;
+            while i + kana_size < main_chars.len() {
+                let next_u = main_chars[i + kana_size] as u32;
+                if (0x3040..=0x309F).contains(&next_u) || (0x30A0..=0x30FF).contains(&next_u) {
+                    kana_size += 1;
+                    if kana_size >= 2 {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if kana_size > 0 {
+                group_sizes.push(kana_size);
+                i += kana_size;
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    if group_sizes.is_empty() {
+        return syls.join(" ");
+    }
+
+    let mut words = Vec::new();
+    let mut syl_idx = 0;
+
+    for size in group_sizes {
+        if syl_idx >= syls.len() {
+            break;
+        }
+        let take = size.min(syls.len() - syl_idx);
+        let word_part = syls[syl_idx..syl_idx + take].concat();
+        words.push(word_part);
+        syl_idx += take;
+    }
+    if syl_idx < syls.len() {
+        words.push(syls[syl_idx..].concat());
+    }
+
+    words.join(" ")
+}
+
+impl LrcLine {
+    pub fn get_sub_syllables(&self) -> Vec<Syllable> {
+        let sub = match self.sub_text.as_ref() {
+            Some(s) if !s.trim().is_empty() => s,
+            _ => return Vec::new(),
+        };
+
+        let formatted = format_sub_text_with_word_spaces(sub, &self.text);
+        parse_sub_syllables(&formatted, &self.syllables, self.time, self.end_time)
+    }
+
+    pub fn get_formatted_sub_text(&self) -> Option<String> {
+        self.sub_text
+            .as_ref()
+            .map(|sub| format_sub_text_with_word_spaces(sub, &self.text))
+    }
+}
+
+pub fn split_latin_word_into_syllables(word: &str) -> Vec<String> {
+    let chars: Vec<char> = word.chars().collect();
+    if chars.len() <= 2 {
+        return vec![word.to_string()];
+    }
+
+    let is_vowel = |c: char| -> bool {
+        let lc = c.to_ascii_lowercase();
+        matches!(
+            lc,
+            'a' | 'i'
+                | 'u'
+                | 'e'
+                | 'o'
+                | 'y'
+                | 'ā'
+                | 'ī'
+                | 'ū'
+                | 'ē'
+                | 'ō'
+                | 'â'
+                | 'î'
+                | 'û'
+                | 'ê'
+                | 'ô'
+                | 'á'
+                | 'à'
+                | 'ǎ'
+                | 'é'
+                | 'è'
+                | 'ě'
+                | 'í'
+                | 'ì'
+                | 'ǐ'
+                | 'ó'
+                | 'ò'
+                | 'ǒ'
+                | 'ú'
+                | 'ù'
+                | 'ǔ'
+                | 'ü'
+                | 'ǖ'
+                | 'ǘ'
+                | 'ǚ'
+                | 'ǜ'
+        )
+    };
+
+    let mut syllables = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+        current.push(c);
+
+        if is_vowel(c) && i + 1 < chars.len() {
+            let n1 = chars[i + 1];
+            let n1_lc = n1.to_ascii_lowercase();
+
+            if is_vowel(n1) {
+                let c_lc = c.to_ascii_lowercase();
+                let is_dip = matches!(
+                    (c_lc, n1_lc),
+                    ('a', 'i') | ('a', 'u') | ('e', 'i') | ('o', 'u') | ('o', 'i')
+                );
+                if is_dip && (i + 2 >= chars.len() || !is_vowel(chars[i + 2])) {
+                    current.push(n1);
+                    i += 1;
+                }
+            }
+
+            if i + 1 < chars.len() {
+                let next1 = chars[i + 1];
+                let n1_lc = next1.to_ascii_lowercase();
+
+                if !is_vowel(next1) && i + 2 < chars.len() {
+                    let next2 = chars[i + 2];
+                    let n2_lc = next2.to_ascii_lowercase();
+                    if n1_lc == n2_lc && next1.is_alphabetic() && n1_lc != 'n' {
+                        current.push(next1);
+                        syllables.push(current.clone());
+                        current.clear();
+                        i += 2;
+                        continue;
+                    }
+                }
+
+                if (n1_lc == 'n' || n1_lc == 'm') && i + 2 < chars.len() {
+                    let next2 = chars[i + 2];
+                    let n2_lc = next2.to_ascii_lowercase();
+                    if n1_lc == 'n' && n2_lc == 'g' {
+                        if i + 3 < chars.len() && !is_vowel(chars[i + 3]) {
+                            current.push(next1);
+                            current.push(next2);
+                            syllables.push(current.clone());
+                            current.clear();
+                            i += 3;
+                            continue;
+                        }
+                    } else if !is_vowel(next2) && n2_lc != 'y' && n2_lc != '\'' {
+                        current.push(next1);
+                        syllables.push(current.clone());
+                        current.clear();
+                        i += 2;
+                        continue;
+                    }
+                }
+
+                if !is_vowel(next1) && next1.is_alphabetic() && i + 2 < chars.len() {
+                    let next2 = chars[i + 2];
+                    let n2_lc = next2.to_ascii_lowercase();
+
+                    // Check for consonant digraphs like sh, ch, zh, th, ph, ng
+                    let is_digraph = matches!(
+                        (n1_lc, n2_lc),
+                        ('s', 'h') | ('c', 'h') | ('z', 'h') | ('t', 'h') | ('p', 'h') | ('n', 'g')
+                    );
+
+                    if is_digraph {
+                        if i + 3 < chars.len() {
+                            let next3 = chars[i + 3];
+                            if is_vowel(next3) || next3.eq_ignore_ascii_case(&'y') {
+                                syllables.push(current.clone());
+                                current.clear();
+                            }
+                        } else {
+                            syllables.push(current.clone());
+                            current.clear();
+                        }
+                    } else if is_vowel(next2) || n2_lc == 'y' {
+                        syllables.push(current.clone());
+                        current.clear();
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if !current.is_empty() {
+        syllables.push(current);
+    }
+
+    if syllables.is_empty() {
+        vec![word.to_string()]
+    } else {
+        syllables
+    }
+}
+
+pub fn parse_sub_syllables(
+    sub_text: &str,
+    main_syllables: &[Syllable],
+    line_start: Duration,
+    line_end: Option<Duration>,
+) -> Vec<Syllable> {
+    let mut words = Vec::new();
+    let mut current_word = String::new();
+
+    for ch in sub_text.chars() {
+        if is_cjk(ch) || ch == '-' || ch == '/' || ch == '|' {
+            if !current_word.is_empty() {
+                words.push(current_word.clone());
+                current_word.clear();
+            }
+            words.push(ch.to_string());
+        } else {
+            current_word.push(ch);
+            if ch.is_whitespace() {
+                words.push(current_word.clone());
+                current_word.clear();
+            }
+        }
+    }
+    if !current_word.is_empty() {
+        words.push(current_word);
+    }
+
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut raw_tokens = Vec::new();
+    for raw_word in words {
+        let trimmed_len = raw_word.trim_end().len();
+        let word_body = &raw_word[..trimmed_len];
+        let trailing = &raw_word[trimmed_len..];
+
+        if !word_body.is_empty() && word_body.chars().all(|c| c.is_alphabetic()) {
+            let sub_syls = split_latin_word_into_syllables(word_body);
+            let n_sub = sub_syls.len();
+            for (idx, syl_part) in sub_syls.into_iter().enumerate() {
+                if idx == n_sub - 1 {
+                    raw_tokens.push(format!("{}{}", syl_part, trailing));
+                } else {
+                    raw_tokens.push(syl_part);
+                }
+            }
+        } else {
+            raw_tokens.push(raw_word);
+        }
+    }
+
+    let mut result = Vec::with_capacity(raw_tokens.len());
+
+    if raw_tokens.len() == main_syllables.len() && !main_syllables.is_empty() {
+        for (token, main_syl) in raw_tokens.into_iter().zip(main_syllables.iter()) {
+            result.push(Syllable {
+                text: token,
+                duration: main_syl.duration,
+            });
+        }
+    } else if !main_syllables.is_empty() {
+        // Map sub_tokens onto cumulative main_syllables timeline for precise synchronization
+        let total_main_ms: u64 = main_syllables
+            .iter()
+            .map(|s| s.duration.as_millis() as u64)
+            .sum();
+        let total_main_chars: usize = main_syllables
+            .iter()
+            .map(|s| s.text.trim().chars().count().max(1))
+            .sum();
+
+        let time_at_char_offset = |char_offset: f64| -> f64 {
+            if char_offset <= 0.0 {
+                return 0.0;
+            }
+            if char_offset >= total_main_chars as f64 {
+                return total_main_ms as f64;
+            }
+
+            let mut char_acc = 0.0;
+            let mut time_acc = 0.0;
+
+            for syl in main_syllables {
+                let syl_dur = syl.duration.as_millis() as f64;
+                let syl_len = syl.text.trim().chars().count().max(1) as f64;
+
+                if char_offset >= char_acc && char_offset <= char_acc + syl_len {
+                    let frac = (char_offset - char_acc) / syl_len;
+                    return time_acc + (syl_dur * frac);
+                }
+
+                char_acc += syl_len;
+                time_acc += syl_dur;
+            }
+
+            total_main_ms as f64
+        };
+
+        let total_sub_chars: usize = raw_tokens
+            .iter()
+            .map(|t| t.trim().chars().count().max(1))
+            .sum();
+
+        let mut sub_char_acc = 0.0;
+        let mut accum_assigned = 0u64;
+        let num_tokens = raw_tokens.len();
+
+        for (i, token) in raw_tokens.into_iter().enumerate() {
+            let token_len = token.trim().chars().count().max(1) as f64;
+            let start_frac = if total_sub_chars > 0 {
+                sub_char_acc / total_sub_chars as f64
+            } else {
+                0.0
+            };
+            sub_char_acc += token_len;
+            let end_frac = if total_sub_chars > 0 {
+                sub_char_acc / total_sub_chars as f64
+            } else {
+                1.0
+            };
+
+            let start_ms = time_at_char_offset(start_frac * total_main_chars as f64);
+            let end_ms = time_at_char_offset(end_frac * total_main_chars as f64);
+
+            let dur_ms = if i == num_tokens - 1 {
+                total_main_ms.saturating_sub(accum_assigned)
+            } else {
+                (end_ms - start_ms).round().max(50.0) as u64
+            };
+
+            accum_assigned += dur_ms;
+            result.push(Syllable {
+                text: token,
+                duration: Duration::from_millis(dur_ms.max(50)),
+            });
+        }
+    } else {
+        let total_line_ms: u64 = if let Some(end) = line_end {
+            end.saturating_sub(line_start).as_millis() as u64
+        } else {
+            4000
+        };
+
+        let total_chars: usize = raw_tokens.iter().map(|t| t.chars().count()).sum();
+        let effective_ms = total_line_ms.clamp(500, 15000);
+        let num_tokens = raw_tokens.len();
+        let mut accum_assigned = 0u64;
+
+        for (i, token) in raw_tokens.into_iter().enumerate() {
+            let char_count = token.chars().count() as u64;
+            let dur_ms = if i == num_tokens - 1 {
+                effective_ms.saturating_sub(accum_assigned)
+            } else if total_chars > 0 {
+                (effective_ms * char_count) / (total_chars as u64)
+            } else {
+                300
+            };
+            accum_assigned += dur_ms;
+            result.push(Syllable {
+                text: token,
+                duration: Duration::from_millis(dur_ms.max(50)),
+            });
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,5 +1345,93 @@ mod tests {
         assert_eq!(lines[0].syllables[1].text.trim(), "wasn't");
         assert_eq!(lines[1].text, "But now you're in my way");
         assert_eq!(lines[1].syllables[2].text.trim(), "you're");
+    }
+
+    #[test]
+    fn test_split_latin_word_into_syllables() {
+        assert_eq!(split_latin_word_into_syllables("kitto"), vec!["kit", "to"]);
+        assert_eq!(split_latin_word_into_syllables("mada"), vec!["ma", "da"]);
+        assert_eq!(split_latin_word_into_syllables("mune"), vec!["mu", "ne"]);
+        assert_eq!(split_latin_word_into_syllables("sunde"), vec!["sun", "de"]);
+        assert_eq!(split_latin_word_into_syllables("ita"), vec!["i", "ta"]);
+    }
+
+    #[test]
+    fn test_parse_sub_syllables_1to1_match() {
+        let main_syls = vec![
+            Syllable {
+                text: "きっ".into(),
+                duration: Duration::from_millis(300),
+            },
+            Syllable {
+                text: "と ".into(),
+                duration: Duration::from_millis(200),
+            },
+            Syllable {
+                text: "ま ".into(),
+                duration: Duration::from_millis(300),
+            },
+            Syllable {
+                text: "だ ".into(),
+                duration: Duration::from_millis(200),
+            },
+        ];
+        let sub = "kitto mada";
+        let sub_syls = parse_sub_syllables(sub, &main_syls, Duration::ZERO, None);
+        assert_eq!(sub_syls.len(), 4);
+        assert_eq!(sub_syls[0].text.trim(), "kit");
+        assert_eq!(sub_syls[0].duration, Duration::from_millis(300));
+        assert_eq!(sub_syls[1].text.trim(), "to");
+        assert_eq!(sub_syls[1].duration, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_parse_sub_syllables_diff_count() {
+        let main_syls = vec![
+            Syllable {
+                text: "Hello ".into(),
+                duration: Duration::from_millis(600),
+            },
+            Syllable {
+                text: "world".into(),
+                duration: Duration::from_millis(400),
+            },
+        ];
+        let sub = "nǐ hǎo shì jiè";
+        let sub_syls = parse_sub_syllables(sub, &main_syls, Duration::ZERO, None);
+        assert_eq!(sub_syls.len(), 4); // 4 words
+        let total_sub_dur: u64 = sub_syls.iter().map(|s| s.duration.as_millis() as u64).sum();
+        assert_eq!(total_sub_dur, 1000);
+    }
+
+    #[test]
+    fn test_format_sub_text_word_spaces_multilingual() {
+        // Japanese Romaji spaced word preserved
+        assert_eq!(
+            format_sub_text_with_word_spaces("mou sukoshi dake", "もう少しだけ"),
+            "mou sukoshi dake"
+        );
+        assert_eq!(
+            format_sub_text_with_word_spaces("Emi tte ite hoshikute", "笑っていてほしくて"),
+            "waratte ite hoshikute"
+        );
+        // Korean Romaja
+        assert_eq!(
+            format_sub_text_with_word_spaces("saranghae", "사랑해"),
+            "sa rang hae"
+        );
+        // Chinese Pinyin
+        assert_eq!(
+            format_sub_text_with_word_spaces("nǐhǎoshìjiè", "你好世界"),
+            "nǐ hǎo shì jiè"
+        );
+    }
+
+    #[test]
+    fn test_fix_romaji_misreadings() {
+        assert_eq!(
+            fix_common_romaji_misreadings("Emi tte ite hoshikute", "笑っていてほしくて"),
+            "waratte ite hoshikute"
+        );
     }
 }

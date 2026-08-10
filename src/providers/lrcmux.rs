@@ -18,19 +18,90 @@ struct LrcMuxResponse {
     plain_lyrics: Option<String>,
 }
 
-/// Parses a single LRCMux response body. Handles both the "flat" shape
-/// (synced/plain lyrics as plain strings — `LrcMuxResponse`) used by the
-/// default endpoint, and the KPOE-compat endpoint's shape, where `lyrics`
-/// is a JSON array of per-word/per-line `{ time, duration, text }` objects
-/// instead of a string. The old code only tried the flat struct, so a
-/// perfectly good KPOE-compat response would fail to deserialize (type
-/// mismatch on `lyrics`) and get silently discarded.
+use crate::providers::ttmllib::parse_time_val;
+
+fn convert_lrcmux_lines_to_lrc(lines: &[Value]) -> Option<String> {
+    let mut lrc_lines = Vec::new();
+
+    for item in lines {
+        let text = item
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+
+        let start_ms = item
+            .get("start")
+            .or_else(|| item.get("time"))
+            .and_then(parse_time_val);
+
+        if let Some(ms_val) = start_ms {
+            let total_secs = ms_val / 1000;
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            let centis = (ms_val % 1000) / 10;
+            let time_tag = format!("[{:02}:{:02}.{:02}]", mins, secs, centis);
+
+            let mut line_str = String::new();
+            if let Some(words_arr) = item.get("words").and_then(|v| v.as_array()) {
+                if !words_arr.is_empty() {
+                    line_str.push_str(&time_tag);
+                    for w in words_arr {
+                        let w_text = w.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let w_start = w
+                            .get("start")
+                            .or_else(|| w.get("time"))
+                            .and_then(parse_time_val)
+                            .unwrap_or(ms_val);
+                        let w_secs = w_start / 1000;
+                        let w_mins = w_secs / 60;
+                        let w_sec_rem = w_secs % 60;
+                        let w_centis = (w_start % 1000) / 10;
+                        line_str.push_str(&format!(
+                            " <{:02}:{:02}.{:02}>{}",
+                            w_mins, w_sec_rem, w_centis, w_text
+                        ));
+                    }
+                }
+            }
+
+            if line_str.is_empty() {
+                if !text.is_empty() {
+                    line_str = format!("{} {}", time_tag, text);
+                } else {
+                    line_str = time_tag.clone();
+                }
+            }
+
+            lrc_lines.push(line_str);
+        }
+    }
+
+    if lrc_lines.is_empty() {
+        None
+    } else {
+        Some(lrc_lines.join("\n"))
+    }
+}
+
 fn parse_lrcmux_response(text: &str) -> Option<LyricsResult> {
     if !text.trim().starts_with('{') {
         return None;
     }
 
-    // 1. Try the flat-string shape first.
+    let v: Value = serde_json::from_str(text).ok()?;
+
+    // 1. Handle native LRCMux response with "lines" array (`{ "lines": [ { "start", "words", ... } ] }`)
+    if let Some(lines_arr) = v.get("lines").and_then(|l| l.as_array()) {
+        if let Some(synced) = convert_lrcmux_lines_to_lrc(lines_arr) {
+            return Some(LyricsResult {
+                synced: Some(synced),
+                plain: None,
+            });
+        }
+    }
+
+    // 2. Handle flat string shape (syncedLyrics, lyricsTtml, ttml, lyrics)
     if let Ok(res) = serde_json::from_str::<LrcMuxResponse>(text) {
         let synced = res
             .lyrics_ttml
@@ -45,16 +116,17 @@ fn parse_lrcmux_response(text: &str) -> Option<LyricsResult> {
         }
     }
 
-    // 2. Fall back to the KPOE-compat array shape: `{ "lyrics": [ {time,
-    //    duration, text}, ... ] }` (this is what /compat/kpoe/v2/... and
-    //    similar endpoints actually return).
-    let v: Value = serde_json::from_str(text).ok()?;
-    let arr = v.get("lyrics").and_then(|l| l.as_array())?;
-    let synced = convert_kpoe_array_to_lrc(arr)?;
-    Some(LyricsResult {
-        synced: Some(synced),
-        plain: None,
-    })
+    // 3. Handle KPOE-compat array shape in "lyrics"
+    if let Some(arr) = v.get("lyrics").and_then(|l| l.as_array()) {
+        if let Some(synced) = convert_kpoe_array_to_lrc(arr) {
+            return Some(LyricsResult {
+                synced: Some(synced),
+                plain: None,
+            });
+        }
+    }
+
+    None
 }
 
 pub async fn fetch_lrcmux_lyrics(

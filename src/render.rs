@@ -266,7 +266,33 @@ pub unsafe fn render_window_d2d(
                     .as_ref()
                     .is_some_and(|sub| !sub.is_empty())
                 {
-                    active_h += font_size_sub_capped + 14.0;
+                    let sub_syls = active_line.get_sub_syllables();
+                    if !sub_syls.is_empty() {
+                        let mut sub_cx = 15.0;
+                        let mut sub_lines = 1.0;
+                        let sub_lh = font_size_sub_capped + 4.0;
+                        for sub_syl in &sub_syls {
+                            let layout = engine.get_cached_text_layout(
+                                &sub_syl.text,
+                                &cfg.font_family,
+                                font_size_sub_capped,
+                                false,
+                                max_w,
+                                sub_lh,
+                            )?;
+                            let mut metrics = DWRITE_TEXT_METRICS::default();
+                            layout.GetMetrics(&mut metrics)?;
+                            let syl_w = metrics.widthIncludingTrailingWhitespace;
+                            if sub_cx + syl_w > max_w && sub_cx > 15.0 {
+                                sub_cx = 15.0;
+                                sub_lines += 1.0;
+                            }
+                            sub_cx += syl_w;
+                        }
+                        active_h += sub_lines * sub_lh + 10.0;
+                    } else {
+                        active_h += font_size_sub_capped + 14.0;
+                    }
                 }
             }
 
@@ -1237,30 +1263,148 @@ pub unsafe fn render_window_d2d(
                                         }
                                     }
 
-                                    if let Some(ref sub) = line.sub_text {
-                                        if !sub.is_empty() {
+                                    if let Some(ref raw_sub) = line.sub_text {
+                                        if !raw_sub.is_empty() {
+                                            let formatted_sub = line
+                                                .get_formatted_sub_text()
+                                                .unwrap_or_else(|| raw_sub.clone());
                                             let font_size_sub_capped =
                                                 cfg.font_size_sub.clamp(14, 40) as f32;
+                                            let sub_y = (line_top + total_box_height + 4.0)
+                                                .min(height_f - font_size_sub_capped - 24.0);
+
                                             let sub_layout = engine.get_cached_text_layout(
-                                                sub,
+                                                &formatted_sub,
                                                 &cfg.font_family,
                                                 font_size_sub_capped,
                                                 false,
-                                                width_f - 30.0,
+                                                width_f - 40.0,
                                                 font_size_sub_capped + 20.0,
                                             )?;
-                                            let sub_color = hex_to_d2d_color(&cfg.sub_hex, 0.95);
-                                            let sub_y = (line_top + total_box_height + 1.0)
-                                                .min(height_f - font_size_sub_capped - 20.0);
+
+                                            let mut sub_metrics = DWRITE_TEXT_METRICS::default();
+                                            sub_layout.GetMetrics(&mut sub_metrics)?;
+                                            let sub_width =
+                                                sub_metrics.widthIncludingTrailingWhitespace;
+
+                                            // Draw subtle rounded pill container matching Image 1
+                                            let pill_px = 10.0f32;
+                                            let pill_py = 3.0f32;
+                                            let pill_rect = D2D1_ROUNDED_RECT {
+                                                rect: D2D_RECT_F {
+                                                    left: 15.0 - pill_px,
+                                                    top: sub_y - pill_py,
+                                                    right: 15.0 + sub_width + pill_px,
+                                                    bottom: sub_y + sub_metrics.height + pill_py,
+                                                },
+                                                radiusX: 12.0,
+                                                radiusY: 12.0,
+                                            };
+
+                                            let pill_bg = hex_to_d2d_color("0c0c14", 0.45);
+                                            reusable_brush.SetColor(&pill_bg);
+                                            target
+                                                .FillRoundedRectangle(&pill_rect, &reusable_brush);
+                                            let pill_border = hex_to_d2d_color("44445c", 0.45);
+                                            reusable_brush.SetColor(&pill_border);
+                                            target.DrawRoundedRectangle(
+                                                &pill_rect,
+                                                &reusable_brush,
+                                                1.0,
+                                                None,
+                                            );
+
+                                            // Base dim text layer
+                                            let sub_dim_color =
+                                                hex_to_d2d_color(&cfg.sub_hex, 0.45);
                                             draw_text_with_shadow(
                                                 target,
                                                 &reusable_brush,
                                                 &sub_layout,
                                                 15.0,
                                                 sub_y,
-                                                &sub_color,
+                                                &sub_dim_color,
                                                 cfg,
                                             );
+
+                                            let sub_karaoke_on =
+                                                cfg.sub_karaoke_enabled.unwrap_or(true);
+                                            if sub_karaoke_on {
+                                                let sub_syllables = line.get_sub_syllables();
+                                                let active_sub_hex_str = cfg
+                                                    .sub_active_hex
+                                                    .as_deref()
+                                                    .unwrap_or("ffffff");
+                                                let sub_active_color =
+                                                    hex_to_d2d_color(active_sub_hex_str, 1.0);
+
+                                                let sub_progress = if !sub_syllables.is_empty() {
+                                                    let total_sub_time: u64 = sub_syllables
+                                                        .iter()
+                                                        .map(|s| s.duration.as_millis() as u64)
+                                                        .sum();
+                                                    let mut accum_t = 0u64;
+                                                    let mut prog = 0.0f32;
+
+                                                    for sub_syl in &sub_syllables {
+                                                        let dur =
+                                                            sub_syl.duration.as_millis().max(50)
+                                                                as u64;
+                                                        let syl_start = accum_t;
+                                                        accum_t += dur;
+
+                                                        if elapsed_line >= syl_start {
+                                                            let local_p =
+                                                                ((elapsed_line - syl_start) as f32
+                                                                    / dur as f32)
+                                                                    .clamp(0.0, 1.0);
+                                                            let syl_weight = dur as f32
+                                                                / total_sub_time.max(1) as f32;
+                                                            prog += local_p * syl_weight;
+                                                        }
+                                                    }
+                                                    prog.clamp(0.0, 1.0)
+                                                } else {
+                                                    let line_dur = if let Some(end) = line.end_time
+                                                    {
+                                                        end.saturating_sub(line.time)
+                                                            .as_millis()
+                                                            .max(1)
+                                                            as u64
+                                                    } else {
+                                                        4000
+                                                    };
+                                                    (elapsed_line as f32 / line_dur as f32)
+                                                        .clamp(0.0, 1.0)
+                                                };
+
+                                                let fill_w = sub_width * sub_progress;
+                                                if fill_w > 0.0 {
+                                                    let clip_rect = D2D_RECT_F {
+                                                        left: 15.0 - pill_px,
+                                                        top: sub_y - pill_py - 2.0,
+                                                        right: 15.0 + fill_w,
+                                                        bottom: sub_y
+                                                            + sub_metrics.height
+                                                            + pill_py
+                                                            + 2.0,
+                                                    };
+                                                    target.PushAxisAlignedClip(
+                                                        &clip_rect,
+                                                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                    );
+                                                    draw_text_with_shadow(
+                                                        target,
+                                                        &reusable_brush,
+                                                        &sub_layout,
+                                                        15.0,
+                                                        sub_y,
+                                                        &sub_active_color,
+                                                        cfg,
+                                                    );
+                                                    target.PopAxisAlignedClip();
+                                                }
+                                            }
                                         }
                                     }
                                 }

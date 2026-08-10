@@ -71,12 +71,28 @@ pub struct StyleConfig {
     #[serde(default = "default_shadow_blur")]
     pub shadow_blur: f32,
 
+    /// Enable/disable karaoke animation on sub-text lines (Romaji, Romaja, Pinyin, translation)
+    #[serde(default)]
+    pub sub_karaoke_enabled: Option<bool>,
+
+    /// Karaoke effect for sub-text: "fade" (default), "sweep", "pulse", "wave", "star_bounce", "none", or "auto"
+    #[serde(default = "default_sub_karaoke_effect")]
+    pub sub_karaoke_effect: Option<String>,
+
+    /// Optional active highlight color hex for sub-text karaoke (defaults to karaoke_hex if None)
+    #[serde(default)]
+    pub sub_active_hex: Option<String>,
+
     /// Automatically trim Working Set memory on song change, pause, and startup
     #[serde(default = "default_auto_trim_memory")]
     pub auto_trim_memory: bool,
     /// Periodic working set memory trim interval in seconds (0 to disable)
     #[serde(default = "default_trim_interval_secs")]
     pub trim_interval_secs: u64,
+}
+
+fn default_sub_karaoke_effect() -> Option<String> {
+    Some("fade".to_string())
 }
 
 fn default_auto_trim_memory() -> bool {
@@ -137,8 +153,11 @@ impl Default for StyleConfig {
             artist_hex: "e2e8f0".into(),
             card_bg_hex: Some("141420".into()),
             show_card: Some(false),
-            karaoke_mode: "always".into(),
-            karaoke_effect: "pulse".into(),
+            karaoke_mode: "auto".into(),
+            karaoke_effect: "wave".into(),
+            sub_karaoke_enabled: Some(true),
+            sub_karaoke_effect: Some("fade".into()),
+            sub_active_hex: None,
             shadow_enabled: true,
             shadow_hex: "000000".into(),
             shadow_opacity: 0.45,

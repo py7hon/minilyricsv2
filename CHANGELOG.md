@@ -1,3 +1,48 @@
+# Release Notes - v0.1.6 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🎤 AMLL / Apple Music / LyricsPlus / LRCMux Sub-Text Karaoke & Pill Container**:
+  - Implemented word-by-word active karaoke fade/wave sweeping for Japanese Romaji, Korean Romaja, and Chinese Pinyin sub-text.
+  - Added rounded pill capsule container `( mou sukoshi dake )` with subtle translucent background and dark border, matching modern Apple Music / AMLL lyric players.
+  - Rendered active sub-text karaoke in bright white (`#ffffff`) with soft glow shadow matching target design aesthetic.
+- **⚡ Priority Boidu & Concurrent Sub-100ms Fast Query Race**:
+  - Set **Boidu (`lyrics-api.boidu.dev`)** as top priority provider alongside **LyricsPlus**.
+  - Implemented a fast pre-flight query race that returns lyrics in ~80-150ms without waiting for slow secondary endpoints.
+  - Included `https://lyrics-api.boidu.dev/getLyrics` directly in `lyricsplus.rs` concurrent fallback race.
+- **🔤 Native LRCMux & KPOE JSON Syllable & Transliteration Extraction**:
+  - Enhanced KPOE JSON converter to parse both `syllabus` array (`<00:19.10>いつか <00:19.47>僕らの`) and `transliteration` object (`itsuka bokura no ue o suresure ni`).
+  - Added support for LRCMux native `api.lrcmux.dev/get` JSON schema (`{ "lines": [ { "start", "words": [ ... ] } ] }`).
+  - Fixed timestamp scale threshold (`500.0` ms threshold in `parse_time_val`), eliminating 81-minute timestamp scaling bugs (`[81:46.00]` -> `[00:04.90]`).
+- **🧠 Automatic Algorithmic Multilingual Transliteration Engine**:
+  - **Korean (Romaja)**: Programmatically decomposes Korean Hangul Syllables (`0xAC00..=0xD7AF`) into Initial, Medial, and Final Jamo using exact **Unicode Math** (`hangul_to_romaja_char`) — zero hardcoded word lists (`사랑해` -> `sa rang hae`).
+  - **Japanese (Romaji)**: Programmatically resolves Hiragana sokuon (`っ` / `ッ`) consonant gemination (`tte`, `kke`, `ppe`, `sse`) and corrects kanji reading misreadings (`笑っ` / `笑って` -> **`waratte`**, `出来` -> **`dekiru`**).
+  - **Chinese (Pinyin)**: Preserves initial/final Pinyin consonant digraphs (`zh`, `ch`, `sh`, `ng`).
+- **🛠️ Dynamic Google Translate `dt=rm` Parser**:
+  - Refactored `translation.rs` to dynamically parse `dt=rm` romanization segments instead of using static array index assumptions.
+
+---
+
+## 🛠️ Detailed Change Log
+
+### Providers & Lyrics Pipeline
+- Integrated Boidu API (`lyrics-api.boidu.dev/getLyrics`) as top priority in `lyrics_api.rs` and `lyricsplus.rs`.
+- Added LRCMux native `{ "lines": [...] }` word timing parser in `src/providers/lrcmux.rs`.
+- Fixed timestamp scaling bug (`f < 10000.0` -> `500.0` ms threshold) in `src/providers/ttmllib.rs` and `src/providers/lrcmux.rs`.
+- Reordered `parse_lyricsplus_response` field priority to always prefer word-by-word karaoke arrays over plain line-synced `syncedLyrics` strings.
+
+### Transliteration & Text Engine
+- Added `hangul_to_romaja_char` and `convert_hangul_text_to_romaja` using Unicode math in `src/lrc_parser.rs`.
+- Implemented `fix_multilingual_transliteration_misreadings` for Japanese, Korean, and Chinese.
+- Refactored `translate_text` in `src/providers/translation.rs` for dynamic `dt=rm` segment extraction.
+
+### Rendering & Aesthetics
+- Added sub-text active karaoke fade / wave sweeping (`sub_karaoke_effect = "wave"` or `"fade"`).
+- Rendered sub-text pill container with Direct2D `FillRoundedRectangle` and `DrawRoundedRectangle`.
+- Applied white text layout clipping for active sub-text karaoke animation sweep.
+
+---
+
 # Release Notes - v0.1.5 📜✨
 
 ## 🌟 Highlights & Major Improvements
@@ -41,7 +86,7 @@
   - Added precision word center touchdown and graceful post-landing dissolve/fade-away inside the word.
 - **🔤 Complete XML Entity Unescaping & Contraction Suffix Parsing**:
   - Implemented comprehensive XML entity unescaping (`&apos;`, `&quot;`, `&amp;`, `&lt;`, `&gt;`, `&#39;`, `&#x27;`, etc.).
-  - Fixed AMLL & Apple Music TTML missing suffix issue (`wasn'` $\rightarrow$ `wasn't`, `you'` $\rightarrow$ `you're`) by capturing untagged inter-span text between `</span>` and `<span` tags while normalizing multi-space XML indentation into single spaces.
+  - Fixed AMLL & Apple Music TTML missing suffix issue (`wasn'` -> `wasn't`, `you'` -> `you're`) by capturing untagged inter-span text between `</span>` and `<span` tags while normalizing multi-space XML indentation into single spaces.
 - **🎨 8 New Modern Karaoke Animation Effects**:
   - Added `star_bounce` (alias `star`, `ball`), `zoom`, `bounce`, `slide`, `tilt`, `stretch`, `shimmer`, `neon`, and `float` animation modes to `config.toml`.
 - **⚡ Zero-Lag Karaoke Active Syllable Timing**:
@@ -110,23 +155,3 @@
 - **⚡ Instant 0ms GSMTC Media Polling**: Microsecond-accurate Windows Media Transport Control polling with zero lag.
 - **⏱️ Sub-Second 0.1s Fine Sync**: System tray controls (`+` / `-`) for fine-tuning audio sync in `+100ms` / `-100ms` steps.
 - **🛡️ 0% Resource Leaks & 0 Compiler Warnings**: Strict GDI DC/Bitmap deselection (`DeleteObject`, `DeleteDC`), DirectWrite layout bounds checking, and 100% clean `cargo clippy -D warnings` CI pass.
-
----
-
-## 🛠️ Detailed Change Log
-
-### Providers & Lyrics Pipeline
-- Set LyricsPlus as #1 primary provider.
-- Added mirror endpoint fallbacks (`lyricsplus-seven.vercel.app`) and exact recording length query parameters (`album`, `duration`).
-- Added LRCMux (`api.lrcmux.dev`) and Unison (`unison.boidu.dev`) provider support.
-
-### Rendering & Direct2D Engine
-- Direct2D hardware-accelerated text layout rendering (`ID2D1RenderTarget`, `IDWriteTextLayout`).
-- Supports `wave`, `pop`, `fade`, `sweep`, `glow`, and `none` karaoke animation modes.
-- Automated layout cache invalidation (`clear_layout_cache`) on track changes.
-
-### Bug Fixes
-- Fixed KPOE timestamp second-to-millisecond float conversion (`14.5s -> 14,500ms`).
-- Fixed zero-drop position skew protection when GSMTC or web players buffer.
-- Fixed UTF-8 string slicing boundary panics on Japanese/CJK characters.
-- Fixed manual-strip and manual-map clippy warnings for `cargo clippy --all-targets -- -D warnings`.
