@@ -178,10 +178,13 @@ pub fn load_or_create_config() -> StyleConfig {
         }
     }
     let default_config = StyleConfig::default();
-    if let Ok(toml_str) = toml::to_string_pretty(&default_config) {
-        let _ = fs::write(path, toml_str);
-    }
+    save_config(&default_config);
     default_config
+}
+pub fn save_config(config: &StyleConfig) {
+    if let Ok(toml_str) = toml::to_string_pretty(config) {
+        let _ = fs::write("config.toml", toml_str);
+    }
 }
 
 #[allow(dead_code)]

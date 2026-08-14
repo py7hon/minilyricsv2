@@ -8,6 +8,7 @@ mod lrc_parser;
 mod lyrics_api;
 mod providers;
 mod render;
+mod settings_window;
 mod tray;
 mod utils;
 mod window;

@@ -1,6 +1,6 @@
 [package]
 name = "minilyricv2"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 
 [[bin]]
@@ -34,6 +34,7 @@ features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls_Dialogs",
     "Media",
     "Media_Control",
 ]

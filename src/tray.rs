@@ -12,8 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDI_INFORMATION, MF_SEPARATOR, MF_STRING, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SWP_NOZORDER, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WS_EX_TRANSPARENT,
 };
-
-pub const WM_TRAYICON: u32 = 0x0400 + 1; // WM_USER + 1
+pub const WM_TRAYICON: u32 = 0x0400 + 1;
 pub const ID_TRAY_ICON: u32 = 1001;
 pub const ID_MENU_LOCK: u32 = 2001;
 pub const ID_MENU_SIZE_SMALL: u32 = 2003;
@@ -23,6 +22,7 @@ pub const ID_MENU_OFFSET_PLUS: u32 = 2006;
 pub const ID_MENU_OFFSET_MINUS: u32 = 2007;
 pub const ID_MENU_OFFSET_RESET: u32 = 2008;
 pub const ID_MENU_TRIM_MEMORY: u32 = 2009;
+pub const ID_MENU_SETTINGS: u32 = 2010;
 pub const ID_MENU_EXIT: u32 = 2002;
 
 pub fn add_tray_icon(hwnd: HWND) {
@@ -43,7 +43,6 @@ pub fn add_tray_icon(hwnd: HWND) {
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
     }
 }
-
 pub fn remove_tray_icon(hwnd: HWND) {
     unsafe {
         let nid = NOTIFYICONDATAW {
@@ -55,7 +54,6 @@ pub fn remove_tray_icon(hwnd: HWND) {
         let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
     }
 }
-
 pub fn toggle_lock_state(hwnd: HWND) {
     let state_ref = unsafe { APP_STATE.as_ref() };
     if let Some(state_arc) = state_ref {
@@ -69,7 +67,6 @@ pub fn toggle_lock_state(hwnd: HWND) {
                     ex_style & !(WS_EX_TRANSPARENT.0 as isize)
                 };
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
-
                 let _ = SetWindowPos(
                     hwnd,
                     None,
@@ -84,13 +81,11 @@ pub fn toggle_lock_state(hwnd: HWND) {
         }
     }
 }
-
 pub fn show_tray_menu(hwnd: HWND) {
     unsafe {
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
         let hmenu = CreatePopupMenu().unwrap();
-
         let (lock_text, current_offset) = if let Some(state_arc) = APP_STATE.as_ref() {
             if let Ok(s) = state_arc.lock() {
                 let l = if s.is_locked {
@@ -105,12 +100,10 @@ pub fn show_tray_menu(hwnd: HWND) {
         } else {
             ("Toggle Lock\0", 0)
         };
-
         let lock_w: Vec<u16> = lock_text.encode_utf16().collect();
         let small_w: Vec<u16> = "Size: Compact (480x160)\0".encode_utf16().collect();
         let med_w: Vec<u16> = "Size: Normal (560x200)\0".encode_utf16().collect();
         let large_w: Vec<u16> = "Size: Large (680x240)\0".encode_utf16().collect();
-
         let offset_secs = current_offset as f32 / 1000.0;
         let offset_plus_w: Vec<u16> =
             format!("Sync: Faster (+100ms) [Current: {:.1}s]\0", offset_secs)
@@ -119,8 +112,8 @@ pub fn show_tray_menu(hwnd: HWND) {
         let offset_minus_w: Vec<u16> = "Sync: Slower (-100ms)\0".encode_utf16().collect();
         let offset_reset_w: Vec<u16> = "Sync: Reset Offset (0.0s)\0".encode_utf16().collect();
         let trim_mem_w: Vec<u16> = "Trim Memory (Release RAM)\0".encode_utf16().collect();
+        let settings_w: Vec<u16> = "Settings...\0".encode_utf16().collect();
         let exit_w: Vec<u16> = "Exit Mini Lyric\0".encode_utf16().collect();
-
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
@@ -172,13 +165,20 @@ pub fn show_tray_menu(hwnd: HWND) {
             ID_MENU_TRIM_MEMORY as usize,
             PCWSTR(trim_mem_w.as_ptr()),
         );
+        let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_SETTINGS as usize,
+            PCWSTR(settings_w.as_ptr()),
+        );
+        let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
             ID_MENU_EXIT as usize,
             PCWSTR(exit_w.as_ptr()),
         );
-
         let _ = SetForegroundWindow(hwnd);
         let _ = TrackPopupMenu(
             hmenu,

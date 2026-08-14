@@ -2,10 +2,11 @@
 use crate::app_state::APP_STATE;
 use crate::d2d_engine::get_d2d_engine;
 use crate::render::render_window_d2d;
+use crate::settings_window::open_settings_window;
 use crate::tray::{
     add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT, ID_MENU_LOCK,
-    ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SIZE_LARGE,
-    ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, ID_MENU_TRIM_MEMORY, WM_TRAYICON,
+    ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SETTINGS,
+    ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, ID_MENU_TRIM_MEMORY, WM_TRAYICON,
 };
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -43,15 +44,10 @@ impl SurfaceCache {
 }
 
 static mut SURFACE_CACHE: Option<SurfaceCache> = None;
-// Tracks what we last actually painted, so WM_TIMER can skip invalidating
-// (and therefore skip the expensive UpdateLayeredWindow composite) when
-// nothing on screen would actually change this tick.
 static mut LAST_PAINTED_INDEX: usize = usize::MAX;
 static mut LAST_PAINTED_POS_MS: u64 = u64::MAX;
-// Counter for the 33ms WM_TIMER ticks so we can do periodic (every ~2s)
-// housekeeping like re-asserting HWND_TOPMOST without doing it every frame.
 static mut TOPMOST_TICK_COUNTER: u32 = 0;
-const TOPMOST_REASSERT_TICKS: u32 = 60; // ~2 seconds at 33ms/tick
+const TOPMOST_REASSERT_TICKS: u32 = 60;
 static mut IDLE_TRIM_COUNTER: u32 = 0;
 
 pub unsafe extern "system" fn wnd_proc(
@@ -62,8 +58,6 @@ pub unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
-            // 33ms ≈ 30fps. Lyric overlay text doesn't need 60fps smoothness,
-            // and this alone halves paint/GPU work on top of layout caching.
             SetTimer(hwnd, 1, 33, None);
             add_tray_icon(hwnd);
             LRESULT(0)
@@ -74,24 +68,17 @@ pub unsafe extern "system" fn wnd_proc(
                 if let Ok(mut s) = state_arc.lock() {
                     let target = s.current_index as f32;
                     let diff = target - s.float_index;
-
                     let still_animating = if diff.abs() > 0.005 {
-                        // Was tuned for a 16ms tick; bumped up since we now
-                        // tick at 33ms, so the scroll animation still
-                        // converges at roughly the same real-world speed.
                         s.float_index += diff * 0.45;
                         true
                     } else {
                         s.float_index = target;
                         false
                     };
-
                     let active_playing = s.media.is_playing && !s.media.title.is_empty();
                     let current_pos_ms = s.media.position_ms;
                     let pos_changed = current_pos_ms != LAST_PAINTED_POS_MS;
-
                     let index_changed = s.current_index != LAST_PAINTED_INDEX;
-
                     let active_line_is_karaoke = {
                         let mode = s.config.karaoke_mode.trim().to_lowercase();
                         match mode.as_str() {
@@ -104,12 +91,10 @@ pub unsafe extern "system" fn wnd_proc(
                                 .unwrap_or(false),
                         }
                     };
-
                     should_invalidate = still_animating
                         || s.is_loading
                         || index_changed
                         || (active_playing && active_line_is_karaoke && pos_changed);
-
                     if should_invalidate {
                         LAST_PAINTED_INDEX = s.current_index;
                         LAST_PAINTED_POS_MS = current_pos_ms;
@@ -127,10 +112,6 @@ pub unsafe extern "system" fn wnd_proc(
                     crate::utils::trim_working_set();
                 }
             }
-
-            // Periodically re-assert TOPMOST so fullscreen / borderless games
-            // can't permanently steal our z-order. SWP_NOACTIVATE ensures we
-            // never yank focus away from the game.
             TOPMOST_TICK_COUNTER += 1;
             if TOPMOST_TICK_COUNTER >= TOPMOST_REASSERT_TICKS {
                 TOPMOST_TICK_COUNTER = 0;
@@ -151,109 +132,131 @@ pub unsafe extern "system" fn wnd_proc(
             let _ = GetClientRect(hwnd, &mut rect);
             let x = (lparam.0 & 0xFFFF) as i16 as i32;
             let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-
-            if x >= rect.right - 35 && x <= rect.right - 10 && (4..=24).contains(&y) {
+            if x >= rect.right - 40 && y <= 30 {
                 toggle_lock_state(hwnd);
+            } else {
+                // langsung drag tanpa ReleaseCapture, ini work di 0.58
+                let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::WM_NCLBUTTONDOWN,
+                    WPARAM(HTCAPTION as usize),
+                    LPARAM(0),
+                );
             }
             LRESULT(0)
         }
-        WM_TRAYICON => {
-            let lparam_u32 = lparam.0 as u32;
-            if lparam_u32 == WM_LBUTTONUP {
-                toggle_lock_state(hwnd);
-            } else if lparam_u32 == WM_RBUTTONUP {
-                show_tray_menu(hwnd);
+        WM_LBUTTONUP => LRESULT(0),
+        WM_NCHITTEST => {
+            let pt = POINT {
+                x: (lparam.0 & 0xFFFF) as i16 as i32,
+                y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+            };
+            let mut client_pt = pt;
+            let _ = ScreenToClient(hwnd, &mut client_pt);
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            if client_pt.x >= rect.right - 40 && client_pt.y <= 30 {
+                LRESULT(HTCLIENT as isize)
+            } else {
+                LRESULT(HTCAPTION as isize)
             }
+        }
+        WM_RBUTTONUP => {
+            show_tray_menu(hwnd);
             LRESULT(0)
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as u32;
-            if id == ID_MENU_LOCK {
-                toggle_lock_state(hwnd);
-            } else if id == ID_MENU_SIZE_SMALL {
-                let _ = SetWindowPos(hwnd, None, 0, 0, 480, 160, SWP_NOMOVE | SWP_NOZORDER);
-            } else if id == ID_MENU_SIZE_MEDIUM {
-                let _ = SetWindowPos(hwnd, None, 0, 0, 560, 200, SWP_NOMOVE | SWP_NOZORDER);
-            } else if id == ID_MENU_SIZE_LARGE {
-                let _ = SetWindowPos(hwnd, None, 0, 0, 680, 240, SWP_NOMOVE | SWP_NOZORDER);
-            } else if id == ID_MENU_OFFSET_PLUS {
-                if let Some(state_arc) = APP_STATE.as_ref() {
-                    if let Ok(mut s) = state_arc.lock() {
-                        s.offset_ms += 100;
+            match id {
+                ID_MENU_SETTINGS => {
+                    open_settings_window();
+                }
+                ID_MENU_LOCK => {
+                    toggle_lock_state(hwnd);
+                }
+                ID_MENU_SIZE_SMALL => {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        0,
+                        0,
+                        480,
+                        160,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                ID_MENU_SIZE_MEDIUM => {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        0,
+                        0,
+                        560,
+                        200,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                ID_MENU_SIZE_LARGE => {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        0,
+                        0,
+                        680,
+                        240,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+                ID_MENU_OFFSET_PLUS => {
+                    if let Some(state_arc) = APP_STATE.as_ref() {
+                        if let Ok(mut s) = state_arc.lock() {
+                            s.offset_ms += 100;
+                            s.config.offset_ms = s.offset_ms;
+                        }
                     }
                 }
-            } else if id == ID_MENU_OFFSET_MINUS {
-                if let Some(state_arc) = APP_STATE.as_ref() {
-                    if let Ok(mut s) = state_arc.lock() {
-                        s.offset_ms -= 100;
+                ID_MENU_OFFSET_MINUS => {
+                    if let Some(state_arc) = APP_STATE.as_ref() {
+                        if let Ok(mut s) = state_arc.lock() {
+                            s.offset_ms -= 100;
+                            s.config.offset_ms = s.offset_ms;
+                        }
                     }
                 }
-            } else if id == ID_MENU_OFFSET_RESET {
-                if let Some(state_arc) = APP_STATE.as_ref() {
-                    if let Ok(mut s) = state_arc.lock() {
-                        s.offset_ms = 0;
+                ID_MENU_OFFSET_RESET => {
+                    if let Some(state_arc) = APP_STATE.as_ref() {
+                        if let Ok(mut s) = state_arc.lock() {
+                            s.offset_ms = 0;
+                            s.config.offset_ms = 0;
+                        }
                     }
                 }
-            } else if id == ID_MENU_TRIM_MEMORY {
-                crate::utils::trim_working_set();
-            } else if id == ID_MENU_EXIT {
-                let _ = DestroyWindow(hwnd);
+                ID_MENU_TRIM_MEMORY => {
+                    crate::utils::trim_working_set();
+                }
+                ID_MENU_EXIT => {
+                    let _ = DestroyWindow(hwnd);
+                }
+                _ => {}
             }
             LRESULT(0)
         }
-        WM_NCHITTEST => {
-            if let Some(state_arc) = APP_STATE.as_ref() {
-                if let Ok(s) = state_arc.lock() {
-                    if s.is_locked {
-                        return DefWindowProcW(hwnd, msg, wparam, lparam);
-                    }
-                }
+        _ if msg == WM_TRAYICON => {
+            let event = (lparam.0 & 0xFFFF) as u32;
+            if event == WM_RBUTTONUP {
+                show_tray_menu(hwnd);
             }
-
-            let screen_x = (lparam.0 & 0xFFFF) as i16 as i32;
-            let screen_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-
-            let mut client_point = POINT {
-                x: screen_x,
-                y: screen_y,
-            };
-            let _ = ScreenToClient(hwnd, &mut client_point);
-            let mut client_rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut client_rect);
-
-            if client_point.x >= client_rect.right - 40
-                && client_point.x <= client_rect.right - 10
-                && client_point.y >= 4
-                && client_point.y <= 24
-            {
-                return LRESULT(HTCLIENT as isize);
-            }
-
-            if client_point.y <= 50
-                && client_point.x >= 15
-                && client_point.x <= client_rect.right - 45
-            {
-                return LRESULT(HTCAPTION as isize);
-            }
-
-            LRESULT(HTCLIENT as isize)
+            LRESULT(0)
         }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let _hdc_screen = BeginPaint(hwnd, &mut ps);
-
             let mut rect = RECT::default();
             let _ = GetClientRect(hwnd, &mut rect);
             let w = rect.right - rect.left;
             let h = rect.bottom - rect.top;
-
             if w > 0 && h > 0 {
                 let engine = get_d2d_engine();
-
-                // Track changed since last paint -> clear the cached
-                // layouts here, on the UI thread, instead of from the
-                // background fetch task (which isn't safe to touch D2D
-                // from -- see AppState::layout_cache_dirty).
                 if let Some(state_arc) = APP_STATE.as_ref() {
                     if let Ok(mut s) = state_arc.lock() {
                         if s.layout_cache_dirty {
@@ -262,19 +265,16 @@ pub unsafe extern "system" fn wnd_proc(
                         }
                     }
                 }
-
                 let mut needs_recreate = true;
                 if let Some(ref cache) = SURFACE_CACHE {
                     if cache.width == w && cache.height == h {
                         needs_recreate = false;
                     }
                 }
-
                 if needs_recreate {
                     if let Some(mut old_cache) = SURFACE_CACHE.take() {
                         old_cache.release();
                     }
-
                     let mem_dc = CreateCompatibleDC(HDC::default());
                     let bmi = BITMAPINFO {
                         bmiHeader: BITMAPINFOHEADER {
@@ -288,15 +288,12 @@ pub unsafe extern "system" fn wnd_proc(
                         },
                         ..Default::default()
                     };
-
                     let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
                     let mut created_surface = None;
-
                     if let Ok(hbmp) =
                         CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
                     {
                         let old_bmp = SelectObject(mem_dc, HGDIOBJ(hbmp.0));
-
                         if let Ok(dc_target) = engine.create_dc_render_target(mem_dc, &rect) {
                             if let Ok(target) = dc_target.cast::<ID2D1RenderTarget>() {
                                 created_surface = Some(SurfaceCache {
@@ -309,7 +306,6 @@ pub unsafe extern "system" fn wnd_proc(
                                 });
                             }
                         }
-
                         if created_surface.is_none() {
                             let _ = SelectObject(mem_dc, old_bmp);
                             let _ = DeleteObject(HGDIOBJ(hbmp.0));
@@ -318,15 +314,12 @@ pub unsafe extern "system" fn wnd_proc(
                     } else {
                         let _ = DeleteDC(mem_dc);
                     }
-
                     if let Some(cache) = created_surface {
                         SURFACE_CACHE = Some(cache);
                     }
                 }
-
                 if let Some(ref cache) = SURFACE_CACHE {
                     let _ = render_window_d2d(&cache.target, rect, engine);
-
                     let pt_src = POINT { x: 0, y: 0 };
                     let size = SIZE { cx: w, cy: h };
                     let blend = BLENDFUNCTION {
@@ -335,7 +328,6 @@ pub unsafe extern "system" fn wnd_proc(
                         SourceConstantAlpha: 255,
                         AlphaFormat: AC_SRC_ALPHA as u8,
                     };
-
                     let _ = UpdateLayeredWindow(
                         hwnd,
                         HDC::default(),
@@ -349,7 +341,6 @@ pub unsafe extern "system" fn wnd_proc(
                     );
                 }
             }
-
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
@@ -369,7 +360,6 @@ pub fn create_main_window() -> HWND {
     unsafe {
         let instance = GetModuleHandleW(None).unwrap();
         let class_name: Vec<u16> = "MiniLyricWindow\0".encode_utf16().collect();
-
         let wnd_class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wnd_proc),
@@ -378,11 +368,8 @@ pub fn create_main_window() -> HWND {
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
         };
-
         RegisterClassW(&wnd_class);
-
         let window_name: Vec<u16> = "Mini Lyric v2\0".encode_utf16().collect();
-
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
             PCWSTR(class_name.as_ptr()),
@@ -398,7 +385,6 @@ pub fn create_main_window() -> HWND {
             None,
         )
         .unwrap();
-
         let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, SW_SHOW);
         hwnd
     }
