@@ -27,24 +27,8 @@ const COLOR_WINDOW: u32 = 5;
 
 const KARAOKE_MODES: &[&str] = &["auto", "always", "never"];
 const KARAOKE_EFFECTS: &[&str] = &[
-    "star_bounce",
-    "pop",
-    "pulse",
-    "zoom",
-    "wave",
-    "bounce",
-    "slide",
-    "rise",
-    "tilt",
-    "stretch",
-    "shake",
-    "shimmer",
-    "neon",
-    "float",
-    "fade",
-    "sweep",
-    "glow",
-    "none",
+    "pop", "pulse", "zoom", "wave", "bounce", "slide", "rise", "tilt", "star", "stretch", "shake",
+    "shimmer", "neon", "float", "fade", "sweep", "glow", "none",
 ];
 
 fn to_wide(s: &str) -> Vec<u16> {
