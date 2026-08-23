@@ -1,6 +1,8 @@
 use crate::dprintln;
 use crate::providers::amll::fetch_amll_lyrics;
+use crate::providers::betterlyrics::fetch_betterlyrics_lyrics;
 use crate::providers::binimum::fetch_binimum_lyrics;
+
 use crate::providers::boidu::fetch_boidu_lyrics;
 use crate::providers::lrclib::fetch_lrclib_lyrics;
 use crate::providers::lrcmux::fetch_lrcmux_lyrics;
@@ -66,7 +68,7 @@ pub struct LyricsClient {
 impl LyricsClient {
     pub fn new() -> Self {
         let reqwest_client = Client::builder()
-            .timeout(Duration::from_secs(4))
+            .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         Self { reqwest_client }
@@ -105,49 +107,77 @@ impl LyricsClient {
             "└───────────────────────────────────────────────────────────────────────────────┘"
         );
 
-        // ====================================================================
-        // SINGLE ROUND: fire every provider exactly once, concurrently.
-        // Each provider's response is classified as a TTML hit and/or an
-        // LRC hit right where it lands, instead of re-querying every
-        // overlapping provider a second time (the old PASS1/PASS2 split
-        // did the same HTTP calls twice for LyricsPlus/LRCMux/Unison/TTMLLIB
-        // whenever PASS 1 found no TTML at all).
-        // ====================================================================
         dprintln!("\n🚀 [FETCH] Querying all lyrics providers concurrently (single round):");
 
         let client = &self.reqwest_client;
 
-        // ====================================================================
-        // PRIORITY 1: Fast pre-flight check on Boidu (sub-150ms instant load).
-        // If Boidu has synced lyrics for the track, return immediately without
-        // waiting for slower secondary APIs.
-        // ====================================================================
-        dprintln!("🚀 [FETCH] Querying Boidu priority provider first...");
-        let boidu_t = Instant::now();
-        if let Ok(boidu_res) = fetch_boidu_lyrics(client, title, artist, album, duration).await {
-            if let Some(ref synced) = boidu_res.synced {
-                if !synced.trim().is_empty() {
-                    let is_word = is_karaoke_or_ttml_format(synced);
-                    let prov_name = if is_word { "Boidu (TTML)" } else { "Boidu" };
+        let betterlyrics_fut = async {
+            let t = Instant::now();
+            match fetch_betterlyrics_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res
+                        .synced
+                        .as_ref()
+                        .is_some_and(|s| is_karaoke_or_ttml_format(s));
                     dprintln!(
-                        "┌───────────────────────────────────────────────────────────────────────────────┐"
+                        "  ├─ BetterLyrics {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
                     );
-                    dprintln!(
-                        "│ ⚡ [INSTANT MATCH] Priority Provider: {} | Time: {}ms",
-                        prov_name,
-                        boidu_t.elapsed().as_millis()
-                    );
-                    dprintln!("│    Preview: \"{}\"", get_response_preview(synced));
-                    dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                    return Ok((synced.clone(), boidu_res.plain, prov_name.to_string()));
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "BetterLyrics (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "BetterLyrics".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ BetterLyrics ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
                 }
             }
-        }
+        };
 
-        dprintln!(
-            "  └─ Boidu miss/fail ({}ms). Querying secondary providers concurrently...",
-            boidu_t.elapsed().as_millis()
-        );
+        let boidu_fut = async {
+            let t = Instant::now();
+            match fetch_boidu_lyrics(client, title, artist, album, duration).await {
+                Ok(res) => {
+                    let is_ttml = res
+                        .synced
+                        .as_ref()
+                        .is_some_and(|s| is_karaoke_or_ttml_format(s));
+                    dprintln!(
+                        "  ├─ Boidu {} ✅ ({}ms) | {} bytes",
+                        if is_ttml { "TTML" } else { "LRC" },
+                        t.elapsed().as_millis(),
+                        res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                    );
+                    (
+                        is_ttml.then(|| TtmlHit {
+                            content: res.synced.clone().unwrap_or_default(),
+                            plain: res.plain.clone(),
+                            provider: "Boidu (TTML)".into(),
+                        }),
+                        res.synced.clone().map(|content| LrcHit {
+                            content,
+                            plain: res.plain.clone(),
+                            provider: "Boidu".into(),
+                        }),
+                    )
+                }
+                Err(e) => {
+                    dprintln!("  ├─ Boidu ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                    (None, None)
+                }
+            }
+        };
 
         let lyricsplus_fut = async {
             let t = Instant::now();
@@ -401,7 +431,21 @@ impl LyricsClient {
             }
         };
 
-        let (lp_res, amll_res, mx_res, bini_res, lm_res, un_res, tt_res, lr_res, ne_res) = tokio::join!(
+        let (
+            bl_res,
+            boidu_res,
+            lp_res,
+            amll_res,
+            mx_res,
+            bini_res,
+            lm_res,
+            un_res,
+            tt_res,
+            lr_res,
+            ne_res,
+        ) = tokio::join!(
+            betterlyrics_fut,
+            boidu_fut,
             lyricsplus_fut,
             amll_fut,
             musixmatch_fut,
@@ -413,6 +457,8 @@ impl LyricsClient {
             netease_fut
         );
 
+        let (bl_ttml, bl_lrc) = bl_res;
+        let (boidu_ttml, boidu_lrc) = boidu_res;
         let (lp_ttml, lp_lrc) = lp_res;
         let (mx_ttml, mx_lrc) = mx_res;
         let (bini_ttml, bini_lrc) = bini_res;
@@ -420,7 +466,9 @@ impl LyricsClient {
         let (un_ttml, un_lrc) = un_res;
         let (tt_ttml, tt_lrc) = tt_res;
 
-        let ttml_result = lp_ttml
+        let ttml_result = bl_ttml
+            .or(boidu_ttml)
+            .or(lp_ttml)
             .or(amll_res)
             .or(mx_ttml)
             .or(bini_ttml)
@@ -442,7 +490,9 @@ impl LyricsClient {
             return Ok((hit.content, hit.plain, hit.provider));
         }
 
-        let lrc_result = lp_lrc
+        let lrc_result = bl_lrc
+            .or(boidu_lrc)
+            .or(lp_lrc)
             .or(mx_lrc)
             .or(bini_lrc)
             .or(lm_lrc)

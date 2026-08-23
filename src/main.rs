@@ -124,9 +124,18 @@ async fn main() {
                     s.last_pos_ms = media.position_ms;
                     s.last_pos_update = Instant::now();
 
+                    let (parsed_title, parsed_artist) = if media.artist.trim().is_empty() {
+                        match crate::utils::parse_yt_title(&media.title) {
+                            Some((artist, title)) => (title, artist),
+                            None => (media.title.clone(), media.artist.clone()),
+                        }
+                    } else {
+                        (media.title.clone(), media.artist.clone())
+                    };
+
                     request_fetch = true;
-                    fetch_title = media.title.clone();
-                    fetch_artist = media.artist.clone();
+                    fetch_title = parsed_title;
+                    fetch_artist = parsed_artist;
                     fetch_album = media.album.clone();
                     fetch_dur = media.duration_ms;
                 } else {
@@ -154,8 +163,10 @@ async fn main() {
 
             if request_fetch {
                 let dur = (fetch_dur > 0).then_some(fetch_dur / 1000);
+                let clean_title = crate::utils::clean_song_title(&fetch_title);
+                let clean_artist = crate::utils::clean_artist_name(&fetch_artist);
                 let result = lyrics_client
-                    .fetch_lyrics(&fetch_title, &fetch_artist, &fetch_album, dur)
+                    .fetch_lyrics(&clean_title, &clean_artist, &fetch_album, dur)
                     .await;
 
                 match result {
@@ -171,58 +182,84 @@ async fn main() {
                         // When karaoke_mode is "always", force word-by-word on
                         // all lines and synthesize per-syllable durations for
                         // lines that didn't come with real timing data.
-                        if karaoke_mode == "always" {
-                            for line in &mut parsed_lines {
-                                if !line.is_karaoke {
-                                    line.is_karaoke = true;
+                        for line in &mut parsed_lines {
+                            let line_dur_ms = if let Some(end) = line.end_time {
+                                end.saturating_sub(line.time).as_millis() as u64
+                            } else {
+                                4000
+                            };
 
-                                    let line_dur_ms = if let Some(end) = line.end_time {
-                                        end.saturating_sub(line.time).as_millis() as u64
-                                    } else {
-                                        4000
-                                    };
-                                    let total_chars: usize =
-                                        line.syllables.iter().map(|s| s.text.chars().count()).sum();
-                                    if total_chars > 0 {
-                                        let eff = line_dur_ms.clamp(500, 15000);
-                                        for syl in line.syllables.iter_mut() {
-                                            let cc = syl.text.chars().count() as u64;
-                                            syl.duration = Duration::from_millis(
-                                                ((eff * cc) / (total_chars as u64)).max(50),
-                                            );
-                                        }
+                            let sum_dur_ms: u64 = line
+                                .syllables
+                                .iter()
+                                .map(|s| s.duration.as_millis() as u64)
+                                .sum();
+
+                            if line.is_karaoke && sum_dur_ms > 0 && sum_dur_ms < line_dur_ms {
+                                let eff = line_dur_ms.clamp(500, 15000);
+                                let scale = eff as f64 / sum_dur_ms as f64;
+                                for syl in &mut line.syllables {
+                                    let scaled_ms =
+                                        ((syl.duration.as_millis() as f64) * scale) as u64;
+                                    syl.duration = Duration::from_millis(scaled_ms.max(50));
+                                }
+                            } else if karaoke_mode == "always" && !line.is_karaoke {
+                                line.is_karaoke = true;
+                                let total_chars: usize =
+                                    line.syllables.iter().map(|s| s.text.chars().count()).sum();
+                                if total_chars > 0 {
+                                    let eff = line_dur_ms.clamp(500, 15000);
+                                    for syl in line.syllables.iter_mut() {
+                                        let cc = syl.text.chars().count() as u64;
+                                        syl.duration = Duration::from_millis(
+                                            ((eff * cc) / (total_chars as u64)).max(50),
+                                        );
                                     }
                                 }
                             }
                         }
 
-                        // Translate every line that needs it concurrently instead
-                        // of awaiting each translation request one at a time —
-                        // with N untranslated lines this turns an N * ~request_time
-                        // serial wait into roughly one request's worth of wait.
-                        let translation_futs =
-                            parsed_lines.iter().enumerate().filter_map(|(idx, line)| {
-                                let needs_translation = line.sub_text.is_none()
-                                    || line.sub_text.as_ref().is_none_or(|st| st.trim().is_empty());
-                                needs_translation.then(|| {
-                                    let text = line.text.clone();
-                                    let client = lyrics_client.clone();
-                                    async move { (idx, client.translate_text(&text).await) }
-                                })
-                            });
-                        let translations = futures::future::join_all(translation_futs).await;
-                        for (idx, trans_opt) in translations {
-                            if let Some(trans) = trans_opt {
-                                parsed_lines[idx].sub_text = Some(trans);
-                            }
-                        }
-
                         if let Ok(mut s) = state_clone.lock() {
                             s.is_loading = false;
-                            s.lyrics_lines = parsed_lines;
+                            s.lyrics_lines = parsed_lines.clone();
                             s.plain_lyrics = plain_opt;
                             s.provider_name = Some(provider);
+                            s.layout_cache_dirty = true;
                         }
+
+                        // Background translation task so lyrics display instantly on screen!
+                        let state_trans = state_clone.clone();
+                        let client_trans = lyrics_client.clone();
+                        tokio::spawn(async move {
+                            let translation_futs =
+                                parsed_lines.iter().enumerate().filter_map(|(idx, line)| {
+                                    let needs_translation = line.sub_text.is_none()
+                                        || line
+                                            .sub_text
+                                            .as_ref()
+                                            .is_none_or(|st| st.trim().is_empty());
+                                    needs_translation.then(|| {
+                                        let text = line.text.clone();
+                                        let client = client_trans.clone();
+                                        async move { (idx, client.translate_text(&text).await) }
+                                    })
+                                });
+                            let translations = futures::future::join_all(translation_futs).await;
+                            let mut updated = false;
+                            if let Ok(mut s) = state_trans.lock() {
+                                for (idx, trans_opt) in translations {
+                                    if let Some(trans) = trans_opt {
+                                        if idx < s.lyrics_lines.len() {
+                                            s.lyrics_lines[idx].sub_text = Some(trans);
+                                            updated = true;
+                                        }
+                                    }
+                                }
+                                if updated {
+                                    s.layout_cache_dirty = true;
+                                }
+                            }
+                        });
                     }
                     Err(e) => {
                         if let Ok(mut s) = state_clone.lock() {

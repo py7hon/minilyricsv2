@@ -22,9 +22,10 @@
 - 💎 **Transparent Floating Overlay**: Sleek, borderless, glasslike Direct2D overlay floating over any application or media player (YouTube Music, Spotify, Apple Music, Chrome, Edge, etc.).
 - ⚡ **Instant 0ms GSMTC Media Polling**: Instantaneous zero-delay playback state & position monitoring via Windows System Media Transport Controls.
 - 🎤 **Native TTML XML & Word-by-Word Karaoke**: Real-time syllable pop-scaling, wave animations, and smooth line scrolling.
-- 🥇 **LyricsPlus Primary Priority Pipeline**:
-  - **Pass 1 (Word-by-Word TTML Karaoke)**: **LyricsPlus** (Primary) ➔ AMLL Dev ➔ LRCMux ➔ Unison ➔ TTMLLIB.
-  - **Pass 2 (Synced Line LRC Fallback)**: **LyricsPlus** (Primary) ➔ LRCMux ➔ Unison ➔ TTMLLIB ➔ LRCLIB ➔ NetEase.
+- 🥇 **LyricsPlus & Better Lyrics Primary Priority Pipeline**:
+  - **Pass 1 (Word-by-Word TTML / Syllable Karaoke)**: **LyricsPlus** ➔ **Better Lyrics API** (`lyrics.pyoi.eu.org`) ➔ AMLL Dev ➔ LRCMux ➔ Unison ➔ TTMLLIB.
+  - **Pass 2 (Synced Line LRC Fallback)**: **LyricsPlus** ➔ **Better Lyrics API** ➔ LRCMux ➔ Unison ➔ TTMLLIB ➔ LRCLIB ➔ NetEase.
+
 - 🌐 **Automatic Translation & Dual-Line Merger**: Native merging of dual-line translations (e.g., Javanese, Japanese, Korean, Chinese) into unified main text + sub-text translation lines.
 - 🔤 **Dynamic Word Spacing**: Intelligent XML whitespace preservation and alphanumeric token padding to ensure English words never clump together (`We don't gotta be in love, no`).
 - ⏱️ **Sub-Second 0.1s Fine Sync**: Precise `+100ms` / `-100ms` offset controls available via the system tray context menu.

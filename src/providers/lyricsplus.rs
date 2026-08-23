@@ -90,8 +90,18 @@ fn parse_lyricsplus_response(text: &str) -> Option<LyricsResult> {
             }
         }
 
+        let final_synced = if trimmed_synced.contains('<')
+            && trimmed_synced.contains('>')
+            && trimmed_synced.contains('[')
+        {
+            crate::providers::betterlyrics::convert_musixmatch_word_by_word_to_ttml(trimmed_synced)
+                .unwrap_or_else(|| trimmed_synced.to_string())
+        } else {
+            trimmed_synced.to_string()
+        };
+
         return Some(LyricsResult {
-            synced: Some(synced.to_string()),
+            synced: Some(final_synced),
             plain: v
                 .get("plainLyrics")
                 .or_else(|| v.get("plain"))

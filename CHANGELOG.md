@@ -1,4 +1,25 @@
+# Release Notes - v0.1.9 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🌐 Better Lyrics API (`lyrics.pyoi.eu.org`) Integration & Single-Round Speed Optimization**:
+  - Added native provider module `src/providers/betterlyrics.rs` for `https://lyrics.pyoi.eu.org/openapi.json`.
+  - Supports word-by-word Musixmatch & TTML karaoke parsing, converting absolute syllable timestamp tags `<00:13.50> ... <00:13.91>` into duration-accurate millisecond syllable tags.
+  - **🛠️ Fixed JSON Stringified TTML Parsing (`{"ttml": "..."}`)**: Implemented recursive JSON string unwrapping in `betterlyrics.rs` and `lrc_parser.rs` so stringified JSON objects (`{"ttml": "<tt ...>"}`) are extracted to raw TTML XML instead of failing XML parsing and remaining stuck on `"Loading lyrics..."`.
+  - **✨ LyricsPlus & Musixmatch Word-by-Word to Standard TTML XML Converter**: Converted word-by-word LRC lyrics strings (including delta timestamps `<00:00.60>`) in `lyricsplus.rs` and `betterlyrics.rs` into standard TTML XML format (`<tt xmlns="..."><body><div><p begin="..." end="..."><span begin="..." end="...">...</span></p></div></body></tt>`), ensuring all LyricsPlus responses produce true TTML XML markup with absolute word timestamps.
+  - **🎵 Proportional TTML / Musixmatch Word-by-Word Duration Scaling**: Fixed compressed syllable durations (e.g. 20ms–80ms word-start gaps) by scaling syllable durations proportionally across the full line duration. The karaoke bouncing star and word highlight now move in perfect lockstep with the singer from start to end of each line.
+
+
+  - **⚡ Instant 0ms UI Lyric Render**: Render matched lyrics lines immediately on screen while running sub-text translations asynchronously in background `tokio::spawn` tasks.
+  - **🚀 Parallel Multi-Provider Race**: Query all providers concurrently in parallel single-round execution, ranking `BetterLyrics` as #1 priority while eliminating sequential blocking delays.
+
+
+
+
+---
+
 # Release Notes - v0.1.6 📜✨
+
 
 ## 🌟 Highlights & Major Improvements
 

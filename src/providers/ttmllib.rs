@@ -55,9 +55,17 @@ pub fn parse_time_val(v: &Value) -> Option<u64> {
     }
 }
 
-/// Shared KPOE-style lyrics-array -> LRC text converter.
-pub fn convert_kpoe_array_to_lrc(lines_arr: &[Value]) -> Option<String> {
-    let mut lrc_lines = Vec::new();
+pub fn ms_to_ttml_time(ms: u64) -> String {
+    let total_secs = ms / 1000;
+    let mins = total_secs / 60;
+    let secs = total_secs % 60;
+    let millis = ms % 1000;
+    format!("{:02}:{:02}.{:03}", mins, secs, millis)
+}
+
+/// Shared KPOE-style lyrics-array -> TTML XML converter.
+pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
+    let mut p_blocks = Vec::new();
 
     for item in lines_arr {
         let text = item
@@ -68,72 +76,114 @@ pub fn convert_kpoe_array_to_lrc(lines_arr: &[Value]) -> Option<String> {
             .unwrap_or("")
             .trim();
 
-        let time_ms = item
+        let p_start_ms = item
             .get("time")
             .or_else(|| item.get("startTime"))
             .or_else(|| item.get("start"))
             .or_else(|| item.get("t"))
             .and_then(parse_time_val);
 
-        if let Some(ms_val) = time_ms {
-            let total_secs = ms_val / 1000;
-            let mins = total_secs / 60;
-            let secs = total_secs % 60;
-            let centis = (ms_val % 1000) / 10;
-            let time_tag = format!("[{:02}:{:02}.{:02}]", mins, secs, centis);
+        let p_end_ms = item
+            .get("endTime")
+            .or_else(|| item.get("end"))
+            .and_then(parse_time_val);
 
-            let mut line_str = String::new();
-            if let Some(syllabus_arr) = item.get("syllabus").and_then(|v| v.as_array()) {
-                if !syllabus_arr.is_empty() {
-                    line_str.push_str(&time_tag);
-                    for syl in syllabus_arr {
-                        let syl_text = syl.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        let syl_time = syl
-                            .get("time")
-                            .or_else(|| syl.get("startTime"))
-                            .or_else(|| syl.get("start"))
-                            .and_then(parse_time_val)
-                            .unwrap_or(ms_val);
-                        let s_secs = syl_time / 1000;
-                        let s_mins = s_secs / 60;
-                        let s_sec_rem = s_secs % 60;
-                        let s_centis = (syl_time % 1000) / 10;
-                        line_str.push_str(&format!(
-                            " <{:02}:{:02}.{:02}>{}",
-                            s_mins, s_sec_rem, s_centis, syl_text
-                        ));
+        let p_start_str = p_start_ms.map(ms_to_ttml_time);
+        let p_end_str = p_end_ms.map(ms_to_ttml_time);
+
+        let mut spans = Vec::new();
+        if let Some(syllabus_arr) = item.get("syllabus").and_then(|v| v.as_array()) {
+            if !syllabus_arr.is_empty() {
+                for (idx, syl) in syllabus_arr.iter().enumerate() {
+                    let syl_text = syl.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if syl_text.is_empty() {
+                        continue;
+                    }
+                    let syl_start_ms = syl
+                        .get("time")
+                        .or_else(|| syl.get("startTime"))
+                        .or_else(|| syl.get("start"))
+                        .and_then(parse_time_val)
+                        .or(p_start_ms);
+                    let syl_end_ms = syl
+                        .get("endTime")
+                        .or_else(|| syl.get("end"))
+                        .and_then(parse_time_val);
+
+                    let mut final_text = syl_text.to_string();
+                    if idx + 1 < syllabus_arr.len() && !final_text.ends_with(' ') {
+                        let next_has_text = syllabus_arr[idx + 1]
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|t| !t.trim().is_empty());
+                        if next_has_text {
+                            final_text.push(' ');
+                        }
+                    }
+
+                    let escaped = final_text
+                        .replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;");
+
+                    match (syl_start_ms, syl_end_ms) {
+                        (Some(b), Some(e)) => spans.push(format!(
+                            "        <span begin=\"{}\" end=\"{}\">{}</span>",
+                            ms_to_ttml_time(b),
+                            ms_to_ttml_time(e),
+                            escaped
+                        )),
+                        (Some(b), None) => spans.push(format!(
+                            "        <span begin=\"{}\">{}</span>",
+                            ms_to_ttml_time(b),
+                            escaped
+                        )),
+                        _ => spans.push(format!("        <span>{}</span>", escaped)),
                     }
                 }
             }
+        }
 
-            if line_str.is_empty() {
-                if !text.is_empty() {
-                    line_str = format!("{} {}", time_tag, text);
-                } else {
-                    line_str = time_tag.clone();
-                }
-            }
+        if spans.is_empty() && !text.is_empty() {
+            let escaped = text
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            spans.push(format!("        <span>{}</span>", escaped));
+        }
 
-            lrc_lines.push(line_str);
-
-            if let Some(trans_obj) = item.get("transliteration") {
-                let trans_text = trans_obj
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if !trans_text.is_empty() {
-                    lrc_lines.push(format!("{} {}", time_tag, trans_text));
-                }
-            }
+        if !spans.is_empty() {
+            let p_b = p_start_str.as_deref().unwrap_or("00:00.000");
+            let p_html = if let Some(ref p_e) = p_end_str {
+                format!(
+                    "      <p begin=\"{}\" end=\"{}\">\n{}\n      </p>",
+                    p_b,
+                    p_e,
+                    spans.join("\n")
+                )
+            } else {
+                format!(
+                    "      <p begin=\"{}\">\n{}\n      </p>",
+                    p_b,
+                    spans.join("\n")
+                )
+            };
+            p_blocks.push(p_html);
         }
     }
 
-    if lrc_lines.is_empty() {
+    if p_blocks.is_empty() {
         None
     } else {
-        Some(lrc_lines.join("\n"))
+        Some(format!(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\">\n  <body>\n    <div>\n{}\n    </div>\n  </body>\n</tt>",
+            p_blocks.join("\n")
+        ))
     }
+}
+
+pub fn convert_kpoe_array_to_lrc(lines_arr: &[Value]) -> Option<String> {
+    convert_kpoe_array_to_ttml(lines_arr)
 }
 
 pub async fn fetch_ttmllib_lyrics(

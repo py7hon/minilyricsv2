@@ -1,4 +1,5 @@
 pub mod amll;
+pub mod betterlyrics;
 pub mod binimum;
 pub mod boidu;
 pub mod http_debug;

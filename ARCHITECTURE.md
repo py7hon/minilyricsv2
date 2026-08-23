@@ -52,12 +52,14 @@ LyricsPlus AMLL    LRCMux   Unison  TTMLLIB / LRCLIB / NetEase
 
 ### 4. Multi-Provider Lyrics Pipeline (`src/lyrics_api.rs` & `src/providers/`)
 - **`lyricsplus.rs` [PRIMARY]**: Primary provider for word-by-word TTML karaoke and synced line LRC lyrics (`lyricsplus.prjktla.my.id`). Includes KPOE JSON array converter and endpoint mirrors.
+- **`betterlyrics.rs`**: Better Lyrics API provider (`lyrics.pyoi.eu.org`), aggregating word-by-word Musixmatch/TTML karaoke, synced LRC, and native Romaji/Romaja/Pinyin transliterations.
 - **`amll.rs`**: AMLL Dev OpenAPI 3.2.0 provider (`api.amll.dev`) for Apple Music TTML XML lyrics.
 - **`lrcmux.rs`**: LRCMux OpenAPI 3.1.0 provider (`api.lrcmux.dev`).
 - **`unison.rs`**: Unison provider (`unison.boidu.dev`).
 - **`ttmllib.rs`**: TTMLLIB provider (`ttmllib.xyz`).
 - **`lrclib.rs`** & **`netease.rs`**: Open-source LRC & NetEase Cloud Music fallback providers.
 - **`translation.rs`**: Google Translate engine (`dt=rm`), extracting Romaji (Japanese), Romaja (Korean), and Pinyin (Chinese) reading badges.
+
 
 ### 5. Native TTML XML Engine & Parser (`src/lrc_parser.rs`)
 - **Native TTML Parser** (`parse_ttml`): Parses `<tt>`, `<p>`, and `<span begin="..." end="...">` XML tags into structured `LrcLine` and `Syllable` instances.

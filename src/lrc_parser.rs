@@ -393,6 +393,20 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
 pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
     let trimmed = content.trim();
+
+    if trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            for key in ["ttml", "lyrics", "syncedLyrics", "subtitle", "text", "lrc"] {
+                if let Some(s) = v.get(key).and_then(|k| k.as_str()) {
+                    let res = parse_lrc(s);
+                    if !res.is_empty() {
+                        return res;
+                    }
+                }
+            }
+        }
+    }
+
     let mut raw_lines =
         if trimmed.contains("<tt") || trimmed.contains("<p") || trimmed.contains("xmlns=") {
             let ttml_lines = parse_ttml(content);
@@ -482,12 +496,25 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
             4000
         };
 
+        let sum_dur_ms: u64 = lines[i]
+            .syllables
+            .iter()
+            .map(|s| s.duration.as_millis() as u64)
+            .sum();
+
         let has_custom_duration = lines[i]
             .syllables
             .iter()
             .any(|s| s.duration.as_millis() != 300);
 
-        if !has_custom_duration {
+        if has_custom_duration && sum_dur_ms > 0 && sum_dur_ms < line_duration_ms {
+            let effective_ms = line_duration_ms.clamp(500, 15000);
+            let scale_factor = effective_ms as f64 / sum_dur_ms as f64;
+            for syl in lines[i].syllables.iter_mut() {
+                let scaled_ms = ((syl.duration.as_millis() as f64) * scale_factor) as u64;
+                syl.duration = Duration::from_millis(scaled_ms.max(50));
+            }
+        } else if !has_custom_duration {
             let total_chars: usize = lines[i]
                 .syllables
                 .iter()
