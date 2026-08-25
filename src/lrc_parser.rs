@@ -331,12 +331,8 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                 .or_else(|| extract_xml_attr(tag_attrs, "role"));
             let lang_val = extract_xml_attr(tag_attrs, "xml:lang");
 
-            let is_translation_span = role_val
-                .as_deref()
-                .is_some_and(is_translation_role_or_lang)
-                || lang_val
-                    .as_deref()
-                    .is_some_and(is_translation_role_or_lang);
+            let is_translation_span = role_val.as_deref().is_some_and(is_translation_role_or_lang)
+                || lang_val.as_deref().is_some_and(is_translation_role_or_lang);
 
             // Capture untagged text appearing before this <span> tag (e.g. &apos;t or punctuation)
             if abs_s_start > prev_span_end {
