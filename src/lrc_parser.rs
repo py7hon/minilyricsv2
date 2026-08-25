@@ -1,3 +1,4 @@
+// src/lrc_parser.rs
 use std::borrow::Cow;
 use std::time::Duration;
 
@@ -77,23 +78,64 @@ pub fn unescape_xml_entities(input: &str) -> String {
     out
 }
 
-fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str) -> u8 {
+fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str, p_block: &str) -> u8 {
     let combined = format!("{} {}", p_open_tag, div_open_tag).to_lowercase();
+    let p_block_lower = p_block.to_lowercase();
+    let text_lower = text.to_lowercase();
+
+    // Check unison (singer_index = 2):
+    let contains_v0 = combined.contains("v0")
+        || combined.contains("agent=\"v0\"")
+        || combined.contains("agent='v0'")
+        || p_block_lower.contains("agent=\"v0\"")
+        || p_block_lower.contains("agent='v0'")
+        || p_block_lower.contains("v0");
+
+    let contains_unison_kw = combined.contains("unison")
+        || combined.contains("together")
+        || combined.contains("both")
+        || text_lower.contains("both:")
+        || text_lower.contains("together:")
+        || text_lower.contains("unison:")
+        || text_lower.contains("[both]")
+        || text_lower.contains("(both)")
+        || text_lower.contains("[together]")
+        || text_lower.contains("(together)");
+
+    let has_v1 = p_block_lower.contains("agent=\"v1\"") || p_block_lower.contains("agent='v1'");
+    let has_v2 = p_block_lower.contains("agent=\"v2\"")
+        || p_block_lower.contains("agent='v2'")
+        || p_block_lower.contains("agent=\"v3\"")
+        || p_block_lower.contains("agent='v3'");
+
+    if contains_v0 || contains_unison_kw || (has_v1 && has_v2) {
+        return 2;
+    }
+
+    // Check secondary / duet singer (singer_index = 1):
     if combined.contains("v2")
         || combined.contains("v3")
         || combined.contains("secondary")
         || combined.contains("duet")
         || combined.contains("agent=\"v2\"")
         || combined.contains("agent='v2'")
+        || combined.contains("agent=\"v3\"")
+        || combined.contains("agent='v3'")
+        || p_block_lower.contains("agent=\"v2\"")
+        || p_block_lower.contains("agent='v2'")
+        || p_block_lower.contains("agent=\"v3\"")
+        || p_block_lower.contains("agent='v3'")
     {
         return 1;
     }
+
     let trimmed = text.trim();
     if (trimmed.starts_with('(') && trimmed.ends_with(')'))
         || (trimmed.starts_with('[') && trimmed.ends_with(']'))
     {
         return 1;
     }
+
     0
 }
 
@@ -187,6 +229,22 @@ fn clean_inter_xml_text(raw: &str) -> Option<String> {
     } else {
         Some(out)
     }
+}
+
+fn is_word_boundary_space(inter_raw: &str) -> bool {
+    if inter_raw.is_empty() {
+        return false;
+    }
+    if inter_raw.chars().all(|c| c.is_whitespace()) {
+        if inter_raw.contains('\n') || inter_raw.contains('\r') {
+            return false;
+        }
+        if inter_raw.len() > 1 {
+            return false;
+        }
+        return inter_raw == " ";
+    }
+    false
 }
 
 pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
@@ -288,6 +346,13 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                         }
                         full_text.push_str(to_add);
                     }
+                } else if is_word_boundary_space(inter_raw) {
+                    if let Some(last_syl) = syllables.last_mut() {
+                        if !last_syl.text.ends_with(' ') {
+                            last_syl.text.push(' ');
+                            full_text.push(' ');
+                        }
+                    }
                 }
             }
 
@@ -303,13 +368,11 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                 continue;
             }
 
-            let after_span = &p_block[s_end + 7..];
-            let has_outside_space = after_span.starts_with(' ')
-                && !after_span.starts_with('\r')
-                && !after_span.starts_with('\n');
-
             let mut final_span_text = span_text;
-            if has_outside_space && !final_span_text.ends_with(' ') {
+            let is_word_role = role_val
+                .as_deref()
+                .is_some_and(|r| r.to_lowercase() == "word");
+            if is_word_role && !final_span_text.ends_with(' ') {
                 final_span_text.push(' ');
             }
 
@@ -370,7 +433,7 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             }
         }
 
-        let singer_index = detect_singer_index(p_open_tag, div_open_tag, &full_text);
+        let singer_index = detect_singer_index(p_open_tag, div_open_tag, &full_text, p_block);
 
         if !full_text.trim().is_empty() {
             lines.push(LrcLine {
@@ -445,7 +508,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
 
                     if let Some(base_time) = parse_lrc_time_str(time_str) {
                         let (syllables, plain_text, is_karaoke) = parse_api_karaoke(raw_text);
-                        let singer_index = detect_singer_index("", "", &plain_text);
+                        let singer_index = detect_singer_index("", "", &plain_text, "");
                         if !plain_text.is_empty() {
                             raw_lines.push(LrcLine {
                                 time: base_time,

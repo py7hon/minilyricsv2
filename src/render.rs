@@ -1,7 +1,9 @@
+// src/render.rs
 #![allow(static_mut_refs)]
 use crate::app_state::APP_STATE;
 use crate::config::StyleConfig;
 use crate::d2d_engine::{hex_to_d2d_color, lerp_d2d_color, D2DEngine};
+use crate::lrc_parser::Syllable;
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_POINT_2F, D2D_RECT_F};
@@ -57,6 +59,21 @@ unsafe fn draw_text_with_shadow(
         brush,
         D2D1_DRAW_TEXT_OPTIONS_NONE,
     );
+}
+
+#[inline]
+fn line_origin_x(
+    _line_idx: usize,
+    singer_index: u8,
+    width_f: f32,
+    text_width: f32,
+    _text: &str,
+) -> f32 {
+    match singer_index {
+        0 => 15.0,
+        2 => ((width_f - text_width) / 2.0).max(15.0),
+        _ => (width_f - 15.0 - text_width).max(15.0),
+    }
 }
 
 pub unsafe fn render_window_d2d(
@@ -225,10 +242,9 @@ pub unsafe fn render_window_d2d(
 
             if current_idx < s.lyrics_lines.len() {
                 let active_line = &s.lyrics_lines[current_idx];
-                let mut cx = 15.0;
-                let mut clines = 1.0;
                 let lh = active_font_size + 4.0;
 
+                let mut syl_widths = Vec::with_capacity(active_line.syllables.len());
                 for syl in &active_line.syllables {
                     let layout = engine.get_cached_text_layout(
                         &syl.text,
@@ -240,26 +256,53 @@ pub unsafe fn render_window_d2d(
                     )?;
                     let mut metrics = DWRITE_TEXT_METRICS::default();
                     layout.GetMetrics(&mut metrics)?;
-                    let is_word_token = syl
-                        .text
-                        .chars()
-                        .last()
-                        .is_some_and(|c| c.is_alphanumeric() || c == '\'' || c == '`');
-                    let padding = if syl.text.ends_with(' ') {
-                        0.0
-                    } else if is_word_token {
-                        (active_font_size * 0.25).max(6.0)
-                    } else {
-                        2.0
-                    };
-                    let syl_width = metrics.widthIncludingTrailingWhitespace + padding;
-
-                    if cx + syl_width > max_w && cx > 15.0 {
-                        cx = 15.0;
-                        clines += 1.0;
-                    }
-                    cx += syl_width;
+                    syl_widths.push((metrics.widthIncludingTrailingWhitespace, syl.text.clone()));
                 }
+
+                struct PreWordUnit {
+                    width: f32,
+                }
+
+                let mut word_units: Vec<PreWordUnit> = Vec::new();
+                let mut cur_unit_w = 0.0f32;
+                let mut prev_ends_space = true;
+
+                for (syl_w, text_str) in &syl_widths {
+                    let starts_space = text_str.starts_with(' ') || text_str.starts_with('\t');
+                    let is_new = prev_ends_space || starts_space;
+                    if is_new && cur_unit_w > 0.0 {
+                        word_units.push(PreWordUnit { width: cur_unit_w });
+                        cur_unit_w = 0.0;
+                    }
+                    prev_ends_space = text_str.ends_with(' ') || text_str.ends_with('\t');
+                    cur_unit_w += syl_w;
+                }
+                if cur_unit_w > 0.0 {
+                    word_units.push(PreWordUnit { width: cur_unit_w });
+                }
+
+                let mut current_line_w = 0.0f32;
+                let mut clines = 0.0f32;
+
+                for unit in word_units {
+                    if current_line_w + unit.width <= max_w {
+                        current_line_w += unit.width;
+                    } else {
+                        if current_line_w > 0.0 {
+                            clines += 1.0;
+                        }
+                        if unit.width <= max_w {
+                            current_line_w = unit.width;
+                        } else {
+                            current_line_w = unit.width % max_w;
+                            clines += (unit.width / max_w).floor();
+                        }
+                    }
+                }
+                if current_line_w > 0.0 || clines == 0.0 {
+                    clines += 1.0;
+                }
+
                 active_h = clines * lh;
                 if active_line
                     .sub_text
@@ -298,6 +341,46 @@ pub unsafe fn render_window_d2d(
 
             let max_center_y = (height_f - active_h - 24.0).max(header_bottom + 4.0);
             let active_center_y = base_center_y.clamp(header_bottom + 4.0, max_center_y);
+
+            let is_in_instrumental_gap = if current_idx < s.lyrics_lines.len() {
+                let cur_line = &s.lyrics_lines[current_idx];
+                let is_cur_instrumental = cur_line.text.trim().is_empty()
+                    || cur_line.text.trim() == "♪"
+                    || cur_line.text.to_lowercase().contains("instrumental")
+                    || cur_line.text.contains('♪');
+
+                if !is_cur_instrumental {
+                    let cur_end_ms = if let Some(end) = cur_line.end_time {
+                        end.as_millis() as u64
+                    } else if !cur_line.syllables.is_empty() {
+                        let total_dur: u64 = cur_line
+                            .syllables
+                            .iter()
+                            .map(|s| s.duration.as_millis() as u64)
+                            .sum();
+                        cur_line.time.as_millis() as u64 + total_dur
+                    } else {
+                        cur_line.time.as_millis() as u64 + 3500
+                    };
+
+                    if adjusted_ms >= cur_end_ms {
+                        if current_idx + 1 < s.lyrics_lines.len() {
+                            let next_start_ms =
+                                s.lyrics_lines[current_idx + 1].time.as_millis() as u64;
+                            adjusted_ms < next_start_ms
+                                && (next_start_ms.saturating_sub(cur_end_ms) >= 1500)
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
 
             if s.is_loading {
                 let loading_layout = engine.get_cached_text_layout(
@@ -349,30 +432,102 @@ pub unsafe fn render_window_d2d(
                             || line.text.to_lowercase().contains("instrumental")
                             || line.text.contains('♪');
 
+                        let active_is_instrumental = is_instrumental || is_in_instrumental_gap;
+
                         if is_active {
-                            if is_instrumental {
-                                let note_text = if line.text.trim().is_empty() {
-                                    "♪"
-                                } else {
-                                    &line.text
-                                };
+                            if active_is_instrumental {
+                                let note_text = "♪";
+                                let small_icon_size = 18.0f32;
                                 let note_layout = engine.get_cached_text_layout(
                                     note_text,
                                     &cfg.font_family,
-                                    active_font_size,
+                                    small_icon_size,
                                     true,
                                     width_f - 30.0,
-                                    active_font_size + 20.0,
+                                    small_icon_size + 20.0,
                                 )?;
+                                let mut note_metrics = DWRITE_TEXT_METRICS::default();
+                                note_layout.GetMetrics(&mut note_metrics)?;
+                                let note_width = note_metrics.widthIncludingTrailingWhitespace;
+                                let note_height = note_metrics.height;
+                                let note_x = line_origin_x(
+                                    target_idx as usize,
+                                    line.singer_index,
+                                    width_f,
+                                    note_width,
+                                    note_text,
+                                );
+
+                                let (start_ms, dur_ms) = if is_in_instrumental_gap {
+                                    let cur_end_ms = if let Some(end) = line.end_time {
+                                        end.as_millis() as u64
+                                    } else if !line.syllables.is_empty() {
+                                        let total_dur: u64 = line
+                                            .syllables
+                                            .iter()
+                                            .map(|s| s.duration.as_millis() as u64)
+                                            .sum();
+                                        line.time.as_millis() as u64 + total_dur
+                                    } else {
+                                        line.time.as_millis() as u64 + 3500
+                                    };
+                                    let next_start_ms = if current_idx + 1 < s.lyrics_lines.len() {
+                                        s.lyrics_lines[current_idx + 1].time.as_millis() as u64
+                                    } else {
+                                        cur_end_ms + 4000
+                                    };
+                                    (cur_end_ms, next_start_ms.saturating_sub(cur_end_ms).max(1))
+                                } else {
+                                    let s_ms = line.time.as_millis() as u64;
+                                    let d_ms = if let Some(end) = line.end_time {
+                                        end.saturating_sub(line.time).as_millis().max(1) as u64
+                                    } else {
+                                        4000
+                                    };
+                                    (s_ms, d_ms)
+                                };
+
+                                let elapsed_inst = adjusted_ms.saturating_sub(start_ms);
+                                let inst_progress =
+                                    (elapsed_inst as f32 / dur_ms as f32).clamp(0.0, 1.0);
+
+                                // Base dim layer
+                                let dim_note_color = hex_to_d2d_color(&cfg.side_hex, 0.4);
                                 draw_text_with_shadow(
                                     target,
                                     &reusable_brush,
                                     &note_layout,
-                                    15.0,
+                                    note_x,
                                     line_top,
-                                    &active_karaoke_color,
+                                    &dim_note_color,
                                     cfg,
                                 );
+
+                                // Active vertical fill layer (bottom to top)
+                                let fill_h = note_height * inst_progress;
+                                if fill_h > 0.0 {
+                                    let icon_bottom = line_top + note_height;
+                                    let clip_rect = D2D_RECT_F {
+                                        left: note_x - 4.0,
+                                        top: icon_bottom - fill_h,
+                                        right: note_x + note_width + 4.0,
+                                        bottom: icon_bottom + 4.0,
+                                    };
+                                    target.PushAxisAlignedClip(
+                                        &clip_rect,
+                                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                    );
+                                    draw_text_with_shadow(
+                                        target,
+                                        &reusable_brush,
+                                        &note_layout,
+                                        note_x,
+                                        line_top,
+                                        &active_karaoke_color,
+                                        cfg,
+                                    );
+                                    target.PopAxisAlignedClip();
+                                }
                             } else {
                                 let karaoke_mode = cfg.karaoke_mode.trim().to_lowercase();
                                 let use_karaoke = match karaoke_mode.as_str() {
@@ -382,10 +537,8 @@ pub unsafe fn render_window_d2d(
                                 };
 
                                 if !use_karaoke {
-                                    let mut current_x = 15.0;
-                                    let mut current_y = line_top;
                                     let line_height = active_font_size + 4.0;
-                                    let mut render_data = Vec::new();
+                                    let mut syl_data = Vec::with_capacity(line.syllables.len());
 
                                     for syl in &line.syllables {
                                         let layout = engine.get_cached_text_layout(
@@ -398,30 +551,135 @@ pub unsafe fn render_window_d2d(
                                         )?;
                                         let mut metrics = DWRITE_TEXT_METRICS::default();
                                         layout.GetMetrics(&mut metrics)?;
-
-                                        let is_word_token =
-                                            syl.text.chars().last().is_some_and(|c| {
-                                                c.is_alphanumeric() || c == '\'' || c == '`'
-                                            });
-                                        let _padding = if syl.text.ends_with(' ') {
-                                            0.0
-                                        } else if is_word_token {
-                                            (active_font_size * 0.25).max(6.0)
-                                        } else {
-                                            2.0
-                                        };
                                         let syl_width = metrics.widthIncludingTrailingWhitespace;
-
-                                        if current_x + syl_width > max_w && current_x > 15.0 {
-                                            current_x = 15.0;
-                                            current_y += line_height;
-                                        }
-
-                                        render_data.push((current_x, current_y, layout));
-                                        current_x += syl_width;
+                                        syl_data.push((layout, syl_width, syl.text.clone()));
                                     }
 
-                                    let total_box_height = (current_y - line_top) + line_height;
+                                    struct WordUnitNonKaraoke {
+                                        items: Vec<(IDWriteTextLayout, f32, String)>,
+                                        width: f32,
+                                    }
+
+                                    let mut word_units: Vec<WordUnitNonKaraoke> = Vec::new();
+                                    let mut cur_unit_items = Vec::new();
+                                    let mut cur_unit_w = 0.0f32;
+                                    let mut prev_ends_with_space = true;
+
+                                    for (layout, syl_w, text_str) in syl_data {
+                                        let starts_with_space =
+                                            text_str.starts_with(' ') || text_str.starts_with('\t');
+                                        let is_new_word = prev_ends_with_space || starts_with_space;
+
+                                        if is_new_word && !cur_unit_items.is_empty() {
+                                            word_units.push(WordUnitNonKaraoke {
+                                                items: cur_unit_items,
+                                                width: cur_unit_w,
+                                            });
+                                            cur_unit_items = Vec::new();
+                                            cur_unit_w = 0.0;
+                                        }
+
+                                        prev_ends_with_space =
+                                            text_str.ends_with(' ') || text_str.ends_with('\t');
+                                        cur_unit_w += syl_w;
+                                        cur_unit_items.push((layout, syl_w, text_str));
+                                    }
+                                    if !cur_unit_items.is_empty() {
+                                        word_units.push(WordUnitNonKaraoke {
+                                            items: cur_unit_items,
+                                            width: cur_unit_w,
+                                        });
+                                    }
+
+                                    struct VisualLineNonKaraoke {
+                                        items: Vec<(IDWriteTextLayout, f32)>,
+                                        width: f32,
+                                        snippet: String,
+                                    }
+
+                                    let mut visual_lines: Vec<VisualLineNonKaraoke> = Vec::new();
+                                    let mut current_items = Vec::new();
+                                    let mut current_w = 0.0f32;
+                                    let mut current_text = String::new();
+
+                                    for unit in word_units {
+                                        if current_w + unit.width <= max_w {
+                                            current_w += unit.width;
+                                            for (layout, syl_w, text_str) in unit.items {
+                                                current_text.push_str(&text_str);
+                                                current_items.push((layout, syl_w));
+                                            }
+                                        } else {
+                                            if !current_items.is_empty() {
+                                                visual_lines.push(VisualLineNonKaraoke {
+                                                    items: current_items,
+                                                    width: current_w,
+                                                    snippet: current_text,
+                                                });
+                                                current_items = Vec::new();
+                                                current_w = 0.0;
+                                                current_text = String::new();
+                                            }
+
+                                            if unit.width <= max_w {
+                                                current_w = unit.width;
+                                                for (layout, syl_w, text_str) in unit.items {
+                                                    current_text.push_str(&text_str);
+                                                    current_items.push((layout, syl_w));
+                                                }
+                                            } else {
+                                                for (layout, syl_w, text_str) in unit.items {
+                                                    if current_w + syl_w > max_w
+                                                        && !current_items.is_empty()
+                                                    {
+                                                        visual_lines.push(VisualLineNonKaraoke {
+                                                            items: current_items,
+                                                            width: current_w,
+                                                            snippet: current_text,
+                                                        });
+                                                        current_items = Vec::new();
+                                                        current_w = 0.0;
+                                                        current_text = String::new();
+                                                    }
+                                                    current_w += syl_w;
+                                                    current_text.push_str(&text_str);
+                                                    current_items.push((layout, syl_w));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !current_items.is_empty() {
+                                        visual_lines.push(VisualLineNonKaraoke {
+                                            items: current_items,
+                                            width: current_w,
+                                            snippet: current_text,
+                                        });
+                                    }
+
+                                    let mut render_data = Vec::new();
+                                    let mut current_y = line_top;
+
+                                    for vline in &visual_lines {
+                                        let line_origin = line_origin_x(
+                                            target_idx as usize,
+                                            line.singer_index,
+                                            width_f,
+                                            vline.width,
+                                            &vline.snippet,
+                                        );
+                                        let mut current_x = line_origin;
+                                        for (layout, syl_w) in &vline.items {
+                                            render_data.push((
+                                                current_x,
+                                                current_y,
+                                                layout.clone(),
+                                            ));
+                                            current_x += syl_w;
+                                        }
+                                        current_y += line_height;
+                                    }
+
+                                    let _total_box_height = (current_y - line_top).max(line_height);
 
                                     for (x, y, layout) in &render_data {
                                         draw_text_with_shadow(
@@ -439,38 +697,64 @@ pub unsafe fn render_window_d2d(
                                         if !sub.is_empty() {
                                             let font_size_sub_capped =
                                                 cfg.font_size_sub.clamp(14, 40) as f32;
-                                            let sub_layout = engine.get_cached_text_layout(
-                                                sub,
-                                                &cfg.font_family,
-                                                font_size_sub_capped,
-                                                false,
-                                                width_f - 30.0,
-                                                font_size_sub_capped + 20.0,
-                                            )?;
-                                            let sub_color = hex_to_d2d_color(&cfg.sub_hex, 0.95);
-                                            let sub_y = (line_top + total_box_height + 1.0)
-                                                .min(height_f - font_size_sub_capped - 20.0);
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &sub_layout,
-                                                15.0,
-                                                sub_y,
-                                                &sub_color,
-                                                cfg,
-                                            );
+                                            let min_gap = 6.0f32;
+                                            let available_bottom =
+                                                height_f - font_size_sub_capped - 20.0;
+                                            let minimal_y = current_y + min_gap;
+
+                                            if minimal_y <= available_bottom {
+                                                let sub_y = minimal_y;
+
+                                                let sub_layout = engine.get_cached_text_layout(
+                                                    sub,
+                                                    &cfg.font_family,
+                                                    font_size_sub_capped,
+                                                    false,
+                                                    width_f - 30.0,
+                                                    font_size_sub_capped + 20.0,
+                                                )?;
+                                                let mut sub_metrics =
+                                                    DWRITE_TEXT_METRICS::default();
+                                                sub_layout.GetMetrics(&mut sub_metrics)?;
+                                                let sub_width =
+                                                    sub_metrics.widthIncludingTrailingWhitespace;
+                                                let sub_x = line_origin_x(
+                                                    target_idx as usize,
+                                                    line.singer_index,
+                                                    width_f,
+                                                    sub_width,
+                                                    sub,
+                                                );
+
+                                                let sub_color =
+                                                    hex_to_d2d_color(&cfg.sub_hex, 0.95);
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &sub_layout,
+                                                    sub_x,
+                                                    sub_y,
+                                                    &sub_color,
+                                                    cfg,
+                                                );
+                                            }
                                         }
                                     }
                                 } else {
                                     let start_ms = line.time.as_millis() as u64;
                                     let elapsed_line = adjusted_ms.saturating_sub(start_ms);
 
-                                    let mut current_x = 15.0;
-                                    let mut current_y = line_top;
                                     let line_height = active_font_size + 4.0;
-                                    let mut accumulated_syl_time = 0u64;
 
-                                    let mut render_data = Vec::new();
+                                    struct SylPrep<'a> {
+                                        syl: &'a Syllable,
+                                        layout: IDWriteTextLayout,
+                                        width: f32,
+                                        progress: f32,
+                                    }
+
+                                    let mut accumulated_syl_time = 0u64;
+                                    let mut prep_syls = Vec::with_capacity(line.syllables.len());
 
                                     for syl in &line.syllables {
                                         let syl_start = accumulated_syl_time;
@@ -494,37 +778,145 @@ pub unsafe fn render_window_d2d(
                                         )?;
                                         let mut metrics = DWRITE_TEXT_METRICS::default();
                                         layout.GetMetrics(&mut metrics)?;
-
-                                        let is_word_token =
-                                            syl.text.chars().last().is_some_and(|c| {
-                                                c.is_alphanumeric() || c == '\'' || c == '`'
-                                            });
-                                        let _padding = if syl.text.ends_with(' ') {
-                                            0.0
-                                        } else if is_word_token {
-                                            (active_font_size * 0.25).max(6.0)
-                                        } else {
-                                            2.0
-                                        };
                                         let syl_width = metrics.widthIncludingTrailingWhitespace;
 
-                                        if current_x + syl_width > max_w && current_x > 15.0 {
-                                            current_x = 15.0;
-                                            current_y += line_height;
-                                        }
-
-                                        render_data.push(RenderSyl {
-                                            x: current_x,
-                                            y: current_y,
+                                        prep_syls.push(SylPrep {
+                                            syl,
+                                            layout,
                                             width: syl_width,
                                             progress: syl_progress,
-                                            layout,
                                         });
-
-                                        current_x += syl_width;
                                     }
 
-                                    let total_box_height = (current_y - line_top) + line_height;
+                                    struct WordUnitKaraoke<'a> {
+                                        items: Vec<&'a SylPrep<'a>>,
+                                        width: f32,
+                                    }
+
+                                    let mut word_units: Vec<WordUnitKaraoke> = Vec::new();
+                                    let mut cur_unit_items = Vec::new();
+                                    let mut cur_unit_w = 0.0f32;
+                                    let mut prev_ends_with_space = true;
+
+                                    for ps in &prep_syls {
+                                        let text_str = &ps.syl.text;
+                                        let starts_with_space =
+                                            text_str.starts_with(' ') || text_str.starts_with('\t');
+                                        let is_new_word = prev_ends_with_space || starts_with_space;
+
+                                        if is_new_word && !cur_unit_items.is_empty() {
+                                            word_units.push(WordUnitKaraoke {
+                                                items: cur_unit_items,
+                                                width: cur_unit_w,
+                                            });
+                                            cur_unit_items = Vec::new();
+                                            cur_unit_w = 0.0;
+                                        }
+
+                                        prev_ends_with_space =
+                                            text_str.ends_with(' ') || text_str.ends_with('\t');
+                                        cur_unit_w += ps.width;
+                                        cur_unit_items.push(ps);
+                                    }
+                                    if !cur_unit_items.is_empty() {
+                                        word_units.push(WordUnitKaraoke {
+                                            items: cur_unit_items,
+                                            width: cur_unit_w,
+                                        });
+                                    }
+
+                                    struct VisualLineKaraoke<'a> {
+                                        items: Vec<&'a SylPrep<'a>>,
+                                        width: f32,
+                                        snippet: String,
+                                    }
+
+                                    let mut visual_lines: Vec<VisualLineKaraoke> = Vec::new();
+                                    let mut current_items = Vec::new();
+                                    let mut current_w = 0.0f32;
+                                    let mut current_text = String::new();
+
+                                    for unit in word_units {
+                                        if current_w + unit.width <= max_w {
+                                            current_w += unit.width;
+                                            for ps in unit.items {
+                                                current_text.push_str(&ps.syl.text);
+                                                current_items.push(ps);
+                                            }
+                                        } else {
+                                            if !current_items.is_empty() {
+                                                visual_lines.push(VisualLineKaraoke {
+                                                    items: current_items,
+                                                    width: current_w,
+                                                    snippet: current_text,
+                                                });
+                                                current_items = Vec::new();
+                                                current_w = 0.0;
+                                                current_text = String::new();
+                                            }
+
+                                            if unit.width <= max_w {
+                                                current_w = unit.width;
+                                                for ps in unit.items {
+                                                    current_text.push_str(&ps.syl.text);
+                                                    current_items.push(ps);
+                                                }
+                                            } else {
+                                                for ps in unit.items {
+                                                    if current_w + ps.width > max_w
+                                                        && !current_items.is_empty()
+                                                    {
+                                                        visual_lines.push(VisualLineKaraoke {
+                                                            items: current_items,
+                                                            width: current_w,
+                                                            snippet: current_text,
+                                                        });
+                                                        current_items = Vec::new();
+                                                        current_w = 0.0;
+                                                        current_text = String::new();
+                                                    }
+                                                    current_w += ps.width;
+                                                    current_text.push_str(&ps.syl.text);
+                                                    current_items.push(ps);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !current_items.is_empty() {
+                                        visual_lines.push(VisualLineKaraoke {
+                                            items: current_items,
+                                            width: current_w,
+                                            snippet: current_text,
+                                        });
+                                    }
+
+                                    let mut render_data = Vec::with_capacity(prep_syls.len());
+                                    let mut current_y = line_top;
+
+                                    for vline in &visual_lines {
+                                        let line_origin = line_origin_x(
+                                            target_idx as usize,
+                                            line.singer_index,
+                                            width_f,
+                                            vline.width,
+                                            &vline.snippet,
+                                        );
+
+                                        let mut current_x = line_origin;
+                                        for ps in &vline.items {
+                                            render_data.push(RenderSyl {
+                                                x: current_x,
+                                                y: current_y,
+                                                width: ps.width,
+                                                progress: ps.progress,
+                                                layout: ps.layout.clone(),
+                                            });
+                                            current_x += ps.width;
+                                        }
+                                        current_y += line_height;
+                                    }
+
+                                    let _total_box_height = (current_y - line_top).max(line_height);
                                     let active_idx = render_data
                                         .iter()
                                         .position(|r| r.progress < 1.0)
@@ -1270,139 +1662,162 @@ pub unsafe fn render_window_d2d(
                                                 .unwrap_or_else(|| raw_sub.clone());
                                             let font_size_sub_capped =
                                                 cfg.font_size_sub.clamp(14, 40) as f32;
-                                            let sub_y = (line_top + total_box_height + 4.0)
-                                                .min(height_f - font_size_sub_capped - 24.0);
+                                            let min_gap = 6.0f32;
+                                            let available_bottom =
+                                                height_f - font_size_sub_capped - 24.0;
+                                            let minimal_y = current_y + min_gap;
 
-                                            let sub_layout = engine.get_cached_text_layout(
-                                                &formatted_sub,
-                                                &cfg.font_family,
-                                                font_size_sub_capped,
-                                                false,
-                                                width_f - 40.0,
-                                                font_size_sub_capped + 20.0,
-                                            )?;
+                                            if minimal_y <= available_bottom {
+                                                let sub_y = minimal_y;
 
-                                            let mut sub_metrics = DWRITE_TEXT_METRICS::default();
-                                            sub_layout.GetMetrics(&mut sub_metrics)?;
-                                            let sub_width =
-                                                sub_metrics.widthIncludingTrailingWhitespace;
+                                                let sub_layout = engine.get_cached_text_layout(
+                                                    &formatted_sub,
+                                                    &cfg.font_family,
+                                                    font_size_sub_capped,
+                                                    false,
+                                                    width_f - 40.0,
+                                                    font_size_sub_capped + 20.0,
+                                                )?;
 
-                                            // Draw subtle rounded pill container matching Image 1
-                                            let pill_px = 10.0f32;
-                                            let pill_py = 3.0f32;
-                                            let pill_rect = D2D1_ROUNDED_RECT {
-                                                rect: D2D_RECT_F {
-                                                    left: 15.0 - pill_px,
-                                                    top: sub_y - pill_py,
-                                                    right: 15.0 + sub_width + pill_px,
-                                                    bottom: sub_y + sub_metrics.height + pill_py,
-                                                },
-                                                radiusX: 12.0,
-                                                radiusY: 12.0,
-                                            };
+                                                let mut sub_metrics =
+                                                    DWRITE_TEXT_METRICS::default();
+                                                sub_layout.GetMetrics(&mut sub_metrics)?;
+                                                let sub_width =
+                                                    sub_metrics.widthIncludingTrailingWhitespace;
 
-                                            let pill_bg = hex_to_d2d_color("0c0c14", 0.45);
-                                            reusable_brush.SetColor(&pill_bg);
-                                            target
-                                                .FillRoundedRectangle(&pill_rect, &reusable_brush);
-                                            let pill_border = hex_to_d2d_color("44445c", 0.45);
-                                            reusable_brush.SetColor(&pill_border);
-                                            target.DrawRoundedRectangle(
-                                                &pill_rect,
-                                                &reusable_brush,
-                                                1.0,
-                                                None,
-                                            );
+                                                let sub_x = line_origin_x(
+                                                    target_idx as usize,
+                                                    line.singer_index,
+                                                    width_f,
+                                                    sub_width,
+                                                    &formatted_sub,
+                                                );
 
-                                            // Base dim text layer
-                                            let sub_dim_color =
-                                                hex_to_d2d_color(&cfg.sub_hex, 0.45);
-                                            draw_text_with_shadow(
-                                                target,
-                                                &reusable_brush,
-                                                &sub_layout,
-                                                15.0,
-                                                sub_y,
-                                                &sub_dim_color,
-                                                cfg,
-                                            );
-
-                                            let sub_karaoke_on =
-                                                cfg.sub_karaoke_enabled.unwrap_or(true);
-                                            if sub_karaoke_on {
-                                                let sub_syllables = line.get_sub_syllables();
-                                                let active_sub_hex_str = cfg
-                                                    .sub_active_hex
-                                                    .as_deref()
-                                                    .unwrap_or("ffffff");
-                                                let sub_active_color =
-                                                    hex_to_d2d_color(active_sub_hex_str, 1.0);
-
-                                                let sub_progress = if !sub_syllables.is_empty() {
-                                                    let total_sub_time: u64 = sub_syllables
-                                                        .iter()
-                                                        .map(|s| s.duration.as_millis() as u64)
-                                                        .sum();
-                                                    let mut accum_t = 0u64;
-                                                    let mut prog = 0.0f32;
-
-                                                    for sub_syl in &sub_syllables {
-                                                        let dur =
-                                                            sub_syl.duration.as_millis().max(50)
-                                                                as u64;
-                                                        let syl_start = accum_t;
-                                                        accum_t += dur;
-
-                                                        if elapsed_line >= syl_start {
-                                                            let local_p =
-                                                                ((elapsed_line - syl_start) as f32
-                                                                    / dur as f32)
-                                                                    .clamp(0.0, 1.0);
-                                                            let syl_weight = dur as f32
-                                                                / total_sub_time.max(1) as f32;
-                                                            prog += local_p * syl_weight;
-                                                        }
-                                                    }
-                                                    prog.clamp(0.0, 1.0)
-                                                } else {
-                                                    let line_dur = if let Some(end) = line.end_time
-                                                    {
-                                                        end.saturating_sub(line.time)
-                                                            .as_millis()
-                                                            .max(1)
-                                                            as u64
-                                                    } else {
-                                                        4000
-                                                    };
-                                                    (elapsed_line as f32 / line_dur as f32)
-                                                        .clamp(0.0, 1.0)
-                                                };
-
-                                                let fill_w = sub_width * sub_progress;
-                                                if fill_w > 0.0 {
-                                                    let clip_rect = D2D_RECT_F {
-                                                        left: 15.0 - pill_px,
-                                                        top: sub_y - pill_py - 2.0,
-                                                        right: 15.0 + fill_w,
+                                                // Draw subtle rounded pill container matching Image 1
+                                                let pill_px = 10.0f32;
+                                                let pill_py = 3.0f32;
+                                                let pill_rect = D2D1_ROUNDED_RECT {
+                                                    rect: D2D_RECT_F {
+                                                        left: sub_x - pill_px,
+                                                        top: sub_y - pill_py,
+                                                        right: sub_x + sub_width + pill_px,
                                                         bottom: sub_y
                                                             + sub_metrics.height
-                                                            + pill_py
-                                                            + 2.0,
+                                                            + pill_py,
+                                                    },
+                                                    radiusX: 12.0,
+                                                    radiusY: 12.0,
+                                                };
+
+                                                let pill_bg = hex_to_d2d_color("0c0c14", 0.45);
+                                                reusable_brush.SetColor(&pill_bg);
+                                                target.FillRoundedRectangle(
+                                                    &pill_rect,
+                                                    &reusable_brush,
+                                                );
+                                                let pill_border = hex_to_d2d_color("44445c", 0.45);
+                                                reusable_brush.SetColor(&pill_border);
+                                                target.DrawRoundedRectangle(
+                                                    &pill_rect,
+                                                    &reusable_brush,
+                                                    1.0,
+                                                    None,
+                                                );
+
+                                                // Base dim text layer
+                                                let sub_dim_color =
+                                                    hex_to_d2d_color(&cfg.sub_hex, 0.45);
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &sub_layout,
+                                                    sub_x,
+                                                    sub_y,
+                                                    &sub_dim_color,
+                                                    cfg,
+                                                );
+
+                                                let sub_karaoke_on =
+                                                    cfg.sub_karaoke_enabled.unwrap_or(true);
+                                                if sub_karaoke_on {
+                                                    let sub_syllables = line.get_sub_syllables();
+                                                    let active_sub_hex_str = cfg
+                                                        .sub_active_hex
+                                                        .as_deref()
+                                                        .unwrap_or("ffffff");
+                                                    let sub_active_color =
+                                                        hex_to_d2d_color(active_sub_hex_str, 1.0);
+
+                                                    let sub_progress = if !sub_syllables.is_empty()
+                                                    {
+                                                        let total_sub_time: u64 = sub_syllables
+                                                            .iter()
+                                                            .map(|s| s.duration.as_millis() as u64)
+                                                            .sum();
+                                                        let mut accum_t = 0u64;
+                                                        let mut prog = 0.0f32;
+
+                                                        for sub_syl in &sub_syllables {
+                                                            let dur = sub_syl
+                                                                .duration
+                                                                .as_millis()
+                                                                .max(50)
+                                                                as u64;
+                                                            let syl_start = accum_t;
+                                                            accum_t += dur;
+
+                                                            if elapsed_line >= syl_start {
+                                                                let local_p = ((elapsed_line
+                                                                    - syl_start)
+                                                                    as f32
+                                                                    / dur as f32)
+                                                                    .clamp(0.0, 1.0);
+                                                                let syl_weight = dur as f32
+                                                                    / total_sub_time.max(1) as f32;
+                                                                prog += local_p * syl_weight;
+                                                            }
+                                                        }
+                                                        prog.clamp(0.0, 1.0)
+                                                    } else {
+                                                        let line_dur =
+                                                            if let Some(end) = line.end_time {
+                                                                end.saturating_sub(line.time)
+                                                                    .as_millis()
+                                                                    .max(1)
+                                                                    as u64
+                                                            } else {
+                                                                4000
+                                                            };
+                                                        (elapsed_line as f32 / line_dur as f32)
+                                                            .clamp(0.0, 1.0)
                                                     };
-                                                    target.PushAxisAlignedClip(
-                                                        &clip_rect,
-                                                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                                                    );
-                                                    draw_text_with_shadow(
-                                                        target,
-                                                        &reusable_brush,
-                                                        &sub_layout,
-                                                        15.0,
-                                                        sub_y,
-                                                        &sub_active_color,
-                                                        cfg,
-                                                    );
-                                                    target.PopAxisAlignedClip();
+
+                                                    let fill_w = sub_width * sub_progress;
+                                                    if fill_w > 0.0 {
+                                                        let clip_rect = D2D_RECT_F {
+                                                            left: sub_x - pill_px,
+                                                            top: sub_y - pill_py - 2.0,
+                                                            right: sub_x + fill_w,
+                                                            bottom: sub_y
+                                                                + sub_metrics.height
+                                                                + pill_py
+                                                                + 2.0,
+                                                        };
+                                                        target.PushAxisAlignedClip(
+                                                            &clip_rect,
+                                                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                        );
+                                                        draw_text_with_shadow(
+                                                            target,
+                                                            &reusable_brush,
+                                                            &sub_layout,
+                                                            sub_x,
+                                                            sub_y,
+                                                            &sub_active_color,
+                                                            cfg,
+                                                        );
+                                                        target.PopAxisAlignedClip();
+                                                    }
                                                 }
                                             }
                                         }
@@ -1419,6 +1834,16 @@ pub unsafe fn render_window_d2d(
                                 width_f - 30.0,
                                 font_size_side_capped + 20.0,
                             )?;
+                            let mut side_metrics = DWRITE_TEXT_METRICS::default();
+                            side_layout.GetMetrics(&mut side_metrics)?;
+                            let side_width = side_metrics.widthIncludingTrailingWhitespace;
+                            let side_x = line_origin_x(
+                                target_idx as usize,
+                                line.singer_index,
+                                width_f,
+                                side_width,
+                                &line.text,
+                            );
 
                             let distance = (target_idx as f32 - float_idx).abs();
                             let side_alpha = if distance > 0.8 { 0.4 } else { 0.75 };
@@ -1427,7 +1852,7 @@ pub unsafe fn render_window_d2d(
                                 target,
                                 &reusable_brush,
                                 &side_layout,
-                                15.0,
+                                side_x,
                                 line_top,
                                 &side_color,
                                 cfg,

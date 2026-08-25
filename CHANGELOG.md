@@ -1,3 +1,32 @@
+# Release Notes - v0.1.10 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🎵 Multi-Vocal Singer Alignment & Unison Mode**:
+  - Added support for Unison (`singer_index = 2`, center-aligned `((width_f - text_width) / 2.0).max(15.0)`).
+  - Added unison line detection in TTML/LRC (`v0`, `agent="v0"`, multiple different agents per `<p>` block, "unison", "together", "both").
+  - Preserved left-alignment (`15.0`) for Singer 1 (`singer_index = 0`) and right-alignment for Singer 2 (`singer_index = 1`).
+- **🔤 Word-Boundary Wrapping & Layout Scaling**:
+  - Implemented syllable grouping into `WordUnit`s to prevent word splitting across lines during word wrapping.
+  - Dynamically calculated `active_h` pre-measurement using `WordUnit` line packing so preview line spacing scales smoothly when lyric lines wrap.
+- **🎤 SubText Overlap Protection & Vertical Clamping**:
+  - Enforced `minimal_y > available_bottom` check to skip rendering `sub_text` when vertical space in compact overlay windows is insufficient, preventing overlap with main lyric lines.
+- **🎼 Animated Instrumental Indicator**:
+  - Replaced static instrumental placeholder text with a sleek musical note icon (`♪`).
+  - Added a **Vertical Progressive Fill Animation (bottom-to-top sweep)** that fills the musical note icon smoothly in lockstep with instrumental line elapsed time.
+  - Replaced the active lyric line display during instrumental gaps with the animated note icon to prevent old lyric text from lingering on screen.
+- **⚡ Eager Early-Exit Provider Fetch & Concurrent Parallelization**:
+  - Converted `fetch_lyrics` orchestration in `src/lyrics_api.rs` to eager background Tokio tasks (`tokio::spawn`) with `mpsc` channel communication and 6-second timeouts per provider. Returns immediately on the first valid TTML hit (~200–400ms) without waiting for slow providers.
+  - Parallelized `fetch_betterlyrics_lyrics` simple and detailed HTTP queries using `tokio::join!`.
+- **🔤 Precision TTML & KPOE Word Boundary Space Fixes**:
+  - Fixed `parse_ttml()` space detection in `src/lrc_parser.rs` to ignore XML formatting indentation while preserving genuine single word boundary spaces.
+  - Fixed `convert_kpoe_array_to_ttml()` in `src/providers/ttmllib.rs` to respect exact syllable trailing spaces from KPOE JSON response.
+- **🧹 Clean Codebase & Zero Clippy Warnings**:
+  - Cleaned up all temporary debug logs.
+  - Resolved all `cargo clippy` warnings and formatted codebase with `cargo fmt`.
+
+---
+
 # Release Notes - v0.1.9 📜✨
 
 ## 🌟 Highlights & Major Improvements

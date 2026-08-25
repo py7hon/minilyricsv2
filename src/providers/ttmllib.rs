@@ -1,3 +1,4 @@
+// src/providers/ttmllib.rs
 use crate::providers::http_debug::http_get_with_debug;
 use reqwest::Client;
 use serde::Deserialize;
@@ -94,7 +95,7 @@ pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
         let mut spans = Vec::new();
         if let Some(syllabus_arr) = item.get("syllabus").and_then(|v| v.as_array()) {
             if !syllabus_arr.is_empty() {
-                for (idx, syl) in syllabus_arr.iter().enumerate() {
+                for syl in syllabus_arr.iter() {
                     let syl_text = syl.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     if syl_text.is_empty() {
                         continue;
@@ -110,16 +111,8 @@ pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
                         .or_else(|| syl.get("end"))
                         .and_then(parse_time_val);
 
-                    let mut final_text = syl_text.to_string();
-                    if idx + 1 < syllabus_arr.len() && !final_text.ends_with(' ') {
-                        let next_has_text = syllabus_arr[idx + 1]
-                            .get("text")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|t| !t.trim().is_empty());
-                        if next_has_text {
-                            final_text.push(' ');
-                        }
-                    }
+                    // Note: `isBackground: true` is present on backing vocal / ad-lib syllables in KPOE JSON, reserved for future background vocal handling.
+                    let final_text = syl_text;
 
                     let escaped = final_text
                         .replace('&', "&amp;")

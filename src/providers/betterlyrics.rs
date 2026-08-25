@@ -1,3 +1,4 @@
+// src/providers/betterlyrics.rs
 use crate::providers::http_debug::http_get_with_debug;
 use crate::providers::ttmllib::LyricsResult;
 use reqwest::Client;
@@ -371,34 +372,53 @@ pub async fn fetch_betterlyrics_lyrics(
         enc_song, enc_artist
     );
 
-    if let Ok(text) = http_get_with_debug(client, &simple_url, "BetterLyrics").await {
-        if let Some(res) = parse_betterlyrics_response(&text) {
-            return Ok(res);
-        }
-    }
+    let has_detailed = !album.trim().is_empty() || duration.is_some();
 
-    // Detailed query with album & duration constraints as fallback if simple query misses
-    if !album.trim().is_empty() || duration.is_some() {
-        let mut detailed_url = format!(
-            "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
-            enc_song, enc_artist
-        );
-        if !album.trim().is_empty() {
-            detailed_url.push_str(&format!("&album={}", urlencoding::encode(album)));
-        }
-        if let Some(dur) = duration {
-            detailed_url.push_str(&format!("&duration={}", dur));
-        }
-
-        if let Ok(text) = http_get_with_debug(client, &detailed_url, "BetterLyrics-Detailed").await
-        {
+    if !has_detailed {
+        if let Ok(text) = http_get_with_debug(client, &simple_url, "BetterLyrics").await {
             if let Some(res) = parse_betterlyrics_response(&text) {
                 return Ok(res);
             }
         }
+        return Err("BetterLyrics API returned no lyrics".into());
     }
 
-    Err("BetterLyrics API returned no lyrics".into())
+    let mut detailed_url = format!(
+        "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
+        enc_song, enc_artist
+    );
+    if !album.trim().is_empty() {
+        detailed_url.push_str(&format!("&album={}", urlencoding::encode(album)));
+    }
+    if let Some(dur) = duration {
+        detailed_url.push_str(&format!("&duration={}", dur));
+    }
+
+    // Execute simple_url and detailed_url in parallel using tokio::join!
+    let simple_fut = async {
+        if let Ok(text) = http_get_with_debug(client, &simple_url, "BetterLyrics").await {
+            parse_betterlyrics_response(&text)
+        } else {
+            None
+        }
+    };
+
+    let detailed_fut = async {
+        if let Ok(text) = http_get_with_debug(client, &detailed_url, "BetterLyrics-Detailed").await
+        {
+            parse_betterlyrics_response(&text)
+        } else {
+            None
+        }
+    };
+
+    let (simple_res, detailed_res) = tokio::join!(simple_fut, detailed_fut);
+
+    if let Some(res) = simple_res.or(detailed_res) {
+        Ok(res)
+    } else {
+        Err("BetterLyrics API returned no lyrics".into())
+    }
 }
 
 #[cfg(test)]
