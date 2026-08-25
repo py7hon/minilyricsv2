@@ -1,52 +1,56 @@
-name: Release
+name: Release & Build Installer
 
 on:
   push:
     tags:
-      - "v*.*.*"
+      - 'v*'
+  workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
-  release:
-    name: Build Release Binary
+  build-release:
+    name: Build Windows Executable & Installer
     runs-on: windows-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry and build artifacts
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-
+          targets: x86_64-pc-windows-msvc
 
-      - name: Build release binary
-        run: cargo build --release --verbose
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
 
-      - name: Rename binary for release
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Install Inno Setup
+        uses: fhac/setup-inno-setup@v2
+
+      - name: Compile Setup Installer (ISCC)
+        run: ISCC.exe installer.iss
+
+      - name: Create Distribution Package (Zip)
+        shell: powershell
         run: |
-          $tag = "${{ github.ref_name }}"
-          $outName = "minilyricv2-$tag-windows-x64.exe"
-          Copy-Item "target\release\minilyricv2.exe" $outName
-          echo "ASSET=$outName" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Path dist -Force
+          Copy-Item target\release\MiniLyricsV2_Setup.exe -Destination dist\MiniLyricsV2_Setup.exe
+          Compress-Archive -Path target\release\minilyricv2.exe -DestinationPath dist\MiniLyricsV2_x64.zip
 
-      - name: Create GitHub Release and upload binary
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
-          body_path: CHANGELOG.md
+          name: MiniLyrics V2 ${{ github.ref_name }}
           generate_release_notes: true
+          files: |
+            dist/MiniLyricsV2_Setup.exe
+            dist/MiniLyricsV2_x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

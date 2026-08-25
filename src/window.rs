@@ -4,9 +4,10 @@ use crate::d2d_engine::get_d2d_engine;
 use crate::render::render_window_d2d;
 use crate::settings_window::open_settings_window;
 use crate::tray::{
-    add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_EXIT, ID_MENU_LOCK,
-    ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET, ID_MENU_SETTINGS,
-    ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL, ID_MENU_TRIM_MEMORY, WM_TRAYICON,
+    add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_CHECK_UPDATE,
+    ID_MENU_EXIT, ID_MENU_LOCK, ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET,
+    ID_MENU_SETTINGS, ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL,
+    ID_MENU_TRIM_MEMORY, WM_TRAYICON,
 };
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -170,6 +171,9 @@ pub unsafe extern "system" fn wnd_proc(
             match id {
                 ID_MENU_SETTINGS => {
                     open_settings_window();
+                }
+                ID_MENU_CHECK_UPDATE => {
+                    crate::updater::check_for_updates_async(true);
                 }
                 ID_MENU_LOCK => {
                     toggle_lock_state(hwnd);

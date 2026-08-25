@@ -325,7 +325,76 @@ fn parse_betterlyrics_response(text: &str) -> Option<LyricsResult> {
         .filter(|s| !s.trim().is_empty());
 
     if let (Some(ref mut synced), Some(sub)) = (&mut main_synced, subtext_candidate) {
-        if sub.contains('[') && sub.contains(']') {
+        let is_ttml = synced.contains("<tt") || synced.contains("<p");
+        if is_ttml {
+            let mut sub_p_tags = Vec::new();
+            if sub.contains('[') && sub.contains(']') {
+                for line in sub.lines() {
+                    let line = line.trim();
+                    if line.starts_with('[') {
+                        if let Some(r_idx) = line.find(']') {
+                            let ts_str = &line[1..r_idx];
+                            let txt = line[r_idx + 1..].trim();
+                            if !txt.is_empty() {
+                                if let Some(ms) = parse_time_str_ms(ts_str) {
+                                    sub_p_tags.push(format!(
+                                        "      <p begin=\"{}\" ttm:role=\"transliteration\">{}</p>",
+                                        crate::providers::ttmllib::ms_to_ttml_time(ms),
+                                        txt.replace('&', "&amp;")
+                                            .replace('<', "&lt;")
+                                            .replace('>', "&gt;")
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                let sub_lines: Vec<&str> = sub
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                let mut begin_times = Vec::new();
+                let mut search_pos = 0;
+                while let Some(p_idx) = synced[search_pos..].find("<p") {
+                    let abs_p = search_pos + p_idx;
+                    if let Some(p_end) = synced[abs_p..].find('>') {
+                        let p_tag = &synced[abs_p..abs_p + p_end];
+                        let pattern = "begin=\"";
+                        if let Some(idx) = p_tag.find(pattern) {
+                            let start = idx + pattern.len();
+                            if let Some(end) = p_tag[start..].find('"') {
+                                begin_times.push(p_tag[start..start + end].to_string());
+                            }
+                        }
+                        search_pos = abs_p + p_end + 1;
+                    } else {
+                        break;
+                    }
+                }
+                for (i, sub_line) in sub_lines.iter().enumerate() {
+                    if i < begin_times.len() {
+                        sub_p_tags.push(format!(
+                            "      <p begin=\"{}\" ttm:role=\"transliteration\">{}</p>",
+                            begin_times[i],
+                            sub_line
+                                .replace('&', "&amp;")
+                                .replace('<', "&lt;")
+                                .replace('>', "&gt;")
+                        ));
+                    }
+                }
+            }
+
+            if !sub_p_tags.is_empty() {
+                if let Some(div_end) = synced.rfind("</div>") {
+                    synced.insert_str(div_end, &format!("\n{}\n", sub_p_tags.join("\n")));
+                } else if let Some(body_end) = synced.rfind("</body>") {
+                    synced.insert_str(body_end, &format!("\n{}\n", sub_p_tags.join("\n")));
+                }
+            }
+        } else if sub.contains('[') && sub.contains(']') {
             synced.push('\n');
             synced.push_str(&sub);
         } else {

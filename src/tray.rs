@@ -23,6 +23,7 @@ pub const ID_MENU_OFFSET_MINUS: u32 = 2007;
 pub const ID_MENU_OFFSET_RESET: u32 = 2008;
 pub const ID_MENU_TRIM_MEMORY: u32 = 2009;
 pub const ID_MENU_SETTINGS: u32 = 2010;
+pub const ID_MENU_CHECK_UPDATE: u32 = 2011;
 pub const ID_MENU_EXIT: u32 = 2002;
 
 pub fn add_tray_icon(hwnd: HWND) {
@@ -113,6 +114,7 @@ pub fn show_tray_menu(hwnd: HWND) {
         let offset_reset_w: Vec<u16> = "Sync: Reset Offset (0.0s)\0".encode_utf16().collect();
         let trim_mem_w: Vec<u16> = "Trim Memory (Release RAM)\0".encode_utf16().collect();
         let settings_w: Vec<u16> = "Settings...\0".encode_utf16().collect();
+        let update_w: Vec<u16> = "Check for Updates...\0".encode_utf16().collect();
         let exit_w: Vec<u16> = "Exit Mini Lyric\0".encode_utf16().collect();
         let _ = AppendMenuW(
             hmenu,
@@ -171,6 +173,12 @@ pub fn show_tray_menu(hwnd: HWND) {
             MF_STRING,
             ID_MENU_SETTINGS as usize,
             PCWSTR(settings_w.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            ID_MENU_CHECK_UPDATE as usize,
+            PCWSTR(update_w.as_ptr()),
         );
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(

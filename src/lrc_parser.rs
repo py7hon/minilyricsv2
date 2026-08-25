@@ -247,8 +247,23 @@ fn is_word_boundary_space(inter_raw: &str) -> bool {
     false
 }
 
+fn is_transliteration_role_or_lang(attr_str: &str) -> bool {
+    let lower = attr_str.to_lowercase();
+    lower.contains("transliteration")
+        || lower.contains("roman")
+        || lower.contains("romaji")
+        || lower.contains("romaja")
+        || lower.contains("pinyin")
+        || lower.contains("-latn")
+}
+
+fn is_translation_role_or_lang(attr_str: &str) -> bool {
+    let lower = attr_str.to_lowercase();
+    lower.contains("translation") || is_transliteration_role_or_lang(&lower)
+}
+
 pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
-    let mut lines = Vec::new();
+    let mut lines: Vec<LrcLine> = Vec::new();
     let mut pos = 0;
 
     while let Some(p_start) = content[pos..].find("<p") {
@@ -264,29 +279,19 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
         let p_tag_end = p_block.find('>').unwrap_or(p_block.len());
         let p_open_tag = &p_block[..p_tag_end];
 
-        if p_open_tag.contains("role=\"translation\"")
-            || p_open_tag.contains("role='translation'")
-            || p_open_tag.contains("role=\"transliteration\"")
-            || p_open_tag.contains("role='transliteration'")
-        {
-            continue;
-        }
-
         let mut div_open_tag = "";
         if let Some(last_div_start) = content[..abs_p_start].rfind("<div") {
             let last_div_end = content[last_div_start..abs_p_start].rfind("</div>");
             if last_div_end.is_none() {
                 let div_tag_end = content[last_div_start..].find('>').unwrap_or(0);
                 div_open_tag = &content[last_div_start..last_div_start + div_tag_end];
-                if div_open_tag.contains("role=\"translation\"")
-                    || div_open_tag.contains("role='translation'")
-                    || div_open_tag.contains("role=\"transliteration\"")
-                    || div_open_tag.contains("role='transliteration'")
-                {
-                    continue;
-                }
             }
         }
+
+        let is_p_sub_line =
+            is_translation_role_or_lang(p_open_tag) || is_translation_role_or_lang(div_open_tag);
+        let is_p_transliteration = is_transliteration_role_or_lang(p_open_tag)
+            || is_transliteration_role_or_lang(div_open_tag);
 
         let begin_val = extract_xml_attr(p_block, "begin");
         let end_val = extract_xml_attr(p_block, "end");
@@ -299,6 +304,8 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
         let mut syllables = Vec::new();
         let mut full_text = String::new();
+        let mut inline_transliteration = String::new();
+        let mut inline_translation = String::new();
         let mut is_karaoke = false;
 
         let p_tag_open_end = p_block.find('>').map(|i| i + 1).unwrap_or(0);
@@ -322,11 +329,14 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
             let role_val = extract_xml_attr(tag_attrs, "ttm:role")
                 .or_else(|| extract_xml_attr(tag_attrs, "role"));
+            let lang_val = extract_xml_attr(tag_attrs, "xml:lang");
 
-            let is_translation_span = role_val.as_deref().is_some_and(|role| {
-                let r = role.to_lowercase();
-                r.contains("translation") || r.contains("transliteration") || r.contains("roman")
-            });
+            let is_translation_span = role_val
+                .as_deref()
+                .is_some_and(is_translation_role_or_lang)
+                || lang_val
+                    .as_deref()
+                    .is_some_and(is_translation_role_or_lang);
 
             // Capture untagged text appearing before this <span> tag (e.g. &apos;t or punctuation)
             if abs_s_start > prev_span_end {
@@ -358,12 +368,32 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
             prev_span_end = span_pos;
 
+            let span_text = strip_xml_tags(span_text_raw);
+            let span_text = unescape_xml_entities(&span_text);
+
             if is_translation_span {
+                if !span_text.trim().is_empty() {
+                    let is_trans_role = role_val
+                        .as_deref()
+                        .is_some_and(is_transliteration_role_or_lang)
+                        || lang_val
+                            .as_deref()
+                            .is_some_and(is_transliteration_role_or_lang);
+                    if is_trans_role {
+                        if !inline_transliteration.is_empty() {
+                            inline_transliteration.push(' ');
+                        }
+                        inline_transliteration.push_str(span_text.trim());
+                    } else {
+                        if !inline_translation.is_empty() {
+                            inline_translation.push(' ');
+                        }
+                        inline_translation.push_str(span_text.trim());
+                    }
+                }
                 continue;
             }
 
-            let span_text = strip_xml_tags(span_text_raw);
-            let span_text = unescape_xml_entities(&span_text);
             if span_text.is_empty() {
                 continue;
             }
@@ -435,17 +465,53 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
         let singer_index = detect_singer_index(p_open_tag, div_open_tag, &full_text, p_block);
 
-        if !full_text.trim().is_empty() {
-            lines.push(LrcLine {
-                time: p_begin,
-                end_time: p_end_time,
-                text: full_text.trim().to_string(),
-                syllables,
-                sub_text: None,
-                style_name: "Default".to_string(),
-                is_karaoke,
-                singer_index,
-            });
+        let sub_text = if !inline_transliteration.trim().is_empty() {
+            Some(inline_transliteration.trim().to_string())
+        } else if !inline_translation.trim().is_empty() {
+            Some(inline_translation.trim().to_string())
+        } else {
+            None
+        };
+
+        let trimmed_text = full_text.trim().to_string();
+        if !trimmed_text.is_empty() {
+            if is_p_sub_line {
+                let mut matched = false;
+                for l in lines.iter_mut().rev() {
+                    if l.time.saturating_sub(p_begin).as_millis() <= 150
+                        || p_begin.saturating_sub(l.time).as_millis() <= 150
+                    {
+                        if l.sub_text.is_none() || is_p_transliteration {
+                            l.sub_text = Some(trimmed_text.clone());
+                        }
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    lines.push(LrcLine {
+                        time: p_begin,
+                        end_time: p_end_time,
+                        text: trimmed_text.clone(),
+                        syllables,
+                        sub_text: Some(trimmed_text),
+                        style_name: "Default".to_string(),
+                        is_karaoke: false,
+                        singer_index,
+                    });
+                }
+            } else {
+                lines.push(LrcLine {
+                    time: p_begin,
+                    end_time: p_end_time,
+                    text: trimmed_text,
+                    syllables,
+                    sub_text,
+                    style_name: "Default".to_string(),
+                    is_karaoke,
+                    singer_index,
+                });
+            }
         }
     }
 
@@ -535,8 +601,23 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
         if let Some(last) = lines.last_mut() {
             let diff = line.time.saturating_sub(last.time).as_millis();
             if diff <= 150 {
-                if last.sub_text.is_none() {
+                let line_has_cjk = line.text.chars().any(is_cjk);
+                let last_has_cjk = last.text.chars().any(is_cjk);
+
+                if !last_has_cjk && line_has_cjk {
+                    let sub_val = last.sub_text.clone().unwrap_or_else(|| last.text.clone());
+                    last.text = line.text;
+                    last.syllables = line.syllables;
+                    last.is_karaoke = line.is_karaoke;
+                    last.singer_index = line.singer_index;
+                    last.sub_text = Some(sub_val);
+                } else if last.sub_text.is_none() {
                     last.sub_text = Some(line.text);
+                } else if line.sub_text.is_some()
+                    && (last.sub_text.as_ref() == Some(&last.text)
+                        || !last.text.chars().any(is_cjk))
+                {
+                    last.sub_text = line.sub_text;
                 }
                 continue;
             }
@@ -622,7 +703,7 @@ fn parse_lrc_time_str(s: &str) -> Option<Duration> {
     }
 }
 
-fn is_cjk(c: char) -> bool {
+pub fn is_cjk(c: char) -> bool {
     let u = c as u32;
     (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs
     (0x3040..=0x309F).contains(&u) || // Hiragana
@@ -1324,7 +1405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ttml_translation_and_transliteration_ignored() {
+    fn test_ttml_translation_and_transliteration_extracted() {
         let ttml = r#"<tt xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body>
             <div ttm:role="main"><p begin="00:00:10.00">Main lyric</p></div>
             <div ttm:role="translation" xml:lang="zh-CN"><p begin="00:00:10.00">Chinese translation</p></div>
@@ -1333,7 +1414,7 @@ mod tests {
         let lines = parse_lrc(ttml);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "Main lyric");
-        assert!(lines[0].sub_text.is_none());
+        assert_eq!(lines[0].sub_text.as_deref(), Some("Pinyin transliteration"));
     }
 
     #[test]
@@ -1350,7 +1431,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "Hello world");
         assert_eq!(lines[0].syllables.len(), 2);
-        assert!(lines[0].sub_text.is_none());
+        assert_eq!(lines[0].sub_text.as_deref(), Some("nǐ hǎo shì jiè"));
     }
 
     #[test]

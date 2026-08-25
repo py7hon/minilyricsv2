@@ -178,7 +178,7 @@ pub unsafe fn render_window_d2d(
                     &cfg.font_family,
                     font_size_title_capped,
                     true,
-                    (width_f - 60.0).max(50.0),
+                    (width_f - 75.0).max(50.0),
                     max_title_h,
                 )?;
                 let mut title_metrics = DWRITE_TEXT_METRICS::default();
@@ -205,7 +205,7 @@ pub unsafe fn render_window_d2d(
                     &cfg.font_family,
                     font_size_artist_capped,
                     false,
-                    (width_f - 60.0).max(50.0),
+                    (width_f - 75.0).max(50.0),
                     (font_size_artist_capped * 2.0) + 10.0,
                 )?;
                 let mut artist_metrics = DWRITE_TEXT_METRICS::default();
@@ -231,110 +231,89 @@ pub unsafe fn render_window_d2d(
             let adjusted_ms = (real_pos_ms as i64 + s.offset_ms).max(0) as u64;
             let float_idx = s.float_index;
 
-            let active_font_size = (cfg.font_size_active.min(40)) as f32;
-            let font_size_sub_capped = cfg.font_size_sub.clamp(14, 40) as f32;
+            let raw_active_font_size = (cfg.font_size_active.min(40)) as f32;
+            let current_idx = s.current_index;
+            let max_w = width_f - 30.0;
+
+            let responsive_scale = if current_idx < s.lyrics_lines.len() {
+                let active_line = &s.lyrics_lines[current_idx];
+                let font_size = raw_active_font_size;
+                let lh = font_size + 4.0;
+
+                if let Ok(layout) = engine.get_cached_text_layout(
+                    &active_line.text,
+                    &cfg.font_family,
+                    font_size,
+                    true,
+                    max_w,
+                    lh,
+                ) {
+                    let mut metrics = DWRITE_TEXT_METRICS::default();
+                    if layout.GetMetrics(&mut metrics).is_ok() {
+                        if metrics.lineCount >= 3 {
+                            0.75f32
+                        } else if metrics.lineCount >= 2 {
+                            0.85f32
+                        } else {
+                            1.00f32
+                        }
+                    } else {
+                        1.00f32
+                    }
+                } else {
+                    1.00f32
+                }
+            } else {
+                1.00f32
+            };
+
+            let active_font_size = raw_active_font_size * responsive_scale;
+            let font_size_sub_capped = (cfg.font_size_sub.clamp(14, 40) as f32) * responsive_scale;
             let _active_karaoke_color = hex_to_d2d_color(&cfg.karaoke_hex, 1.0);
             let active_text_color = hex_to_d2d_color(&cfg.active_hex, 1.0);
 
-            let max_w = width_f - 30.0;
-            let mut active_h = active_font_size + 4.0;
-            let current_idx = s.current_index;
+            let main_lh = (active_font_size * 1.25).max(active_font_size + 8.0);
+            let mut active_h = main_lh;
 
             if current_idx < s.lyrics_lines.len() {
                 let active_line = &s.lyrics_lines[current_idx];
-                let lh = active_font_size + 4.0;
-
-                let mut syl_widths = Vec::with_capacity(active_line.syllables.len());
-                for syl in &active_line.syllables {
-                    let layout = engine.get_cached_text_layout(
-                        &syl.text,
-                        &cfg.font_family,
-                        active_font_size,
-                        true,
-                        max_w,
-                        lh,
-                    )?;
+                if let Ok(layout) = engine.get_cached_text_layout(
+                    &active_line.text,
+                    &cfg.font_family,
+                    active_font_size,
+                    true,
+                    max_w,
+                    main_lh,
+                ) {
                     let mut metrics = DWRITE_TEXT_METRICS::default();
-                    layout.GetMetrics(&mut metrics)?;
-                    syl_widths.push((metrics.widthIncludingTrailingWhitespace, syl.text.clone()));
-                }
-
-                struct PreWordUnit {
-                    width: f32,
-                }
-
-                let mut word_units: Vec<PreWordUnit> = Vec::new();
-                let mut cur_unit_w = 0.0f32;
-                let mut prev_ends_space = true;
-
-                for (syl_w, text_str) in &syl_widths {
-                    let starts_space = text_str.starts_with(' ') || text_str.starts_with('\t');
-                    let is_new = prev_ends_space || starts_space;
-                    if is_new && cur_unit_w > 0.0 {
-                        word_units.push(PreWordUnit { width: cur_unit_w });
-                        cur_unit_w = 0.0;
-                    }
-                    prev_ends_space = text_str.ends_with(' ') || text_str.ends_with('\t');
-                    cur_unit_w += syl_w;
-                }
-                if cur_unit_w > 0.0 {
-                    word_units.push(PreWordUnit { width: cur_unit_w });
-                }
-
-                let mut current_line_w = 0.0f32;
-                let mut clines = 0.0f32;
-
-                for unit in word_units {
-                    if current_line_w + unit.width <= max_w {
-                        current_line_w += unit.width;
-                    } else {
-                        if current_line_w > 0.0 {
-                            clines += 1.0;
-                        }
-                        if unit.width <= max_w {
-                            current_line_w = unit.width;
-                        } else {
-                            current_line_w = unit.width % max_w;
-                            clines += (unit.width / max_w).floor();
-                        }
+                    if layout.GetMetrics(&mut metrics).is_ok() {
+                        active_h = metrics.height.max(main_lh);
                     }
                 }
-                if current_line_w > 0.0 || clines == 0.0 {
-                    clines += 1.0;
-                }
 
-                active_h = clines * lh;
-                if active_line
-                    .sub_text
-                    .as_ref()
-                    .is_some_and(|sub| !sub.is_empty())
-                {
-                    let sub_syls = active_line.get_sub_syllables();
-                    if !sub_syls.is_empty() {
-                        let mut sub_cx = 15.0;
-                        let mut sub_lines = 1.0;
-                        let sub_lh = font_size_sub_capped + 4.0;
-                        for sub_syl in &sub_syls {
-                            let layout = engine.get_cached_text_layout(
-                                &sub_syl.text,
-                                &cfg.font_family,
-                                font_size_sub_capped,
-                                false,
-                                max_w,
-                                sub_lh,
-                            )?;
-                            let mut metrics = DWRITE_TEXT_METRICS::default();
-                            layout.GetMetrics(&mut metrics)?;
-                            let syl_w = metrics.widthIncludingTrailingWhitespace;
-                            if sub_cx + syl_w > max_w && sub_cx > 15.0 {
-                                sub_cx = 15.0;
-                                sub_lines += 1.0;
+                if let Some(ref raw_sub) = active_line.sub_text {
+                    if !raw_sub.is_empty() {
+                        let formatted_sub = active_line
+                            .get_formatted_sub_text()
+                            .unwrap_or_else(|| raw_sub.clone());
+                        let sub_lh = (font_size_sub_capped * 1.25).max(font_size_sub_capped + 6.0);
+                        if let Ok(sub_layout) = engine.get_cached_text_layout(
+                            &formatted_sub,
+                            &cfg.font_family,
+                            font_size_sub_capped,
+                            false,
+                            max_w,
+                            sub_lh,
+                        ) {
+                            let mut sub_metrics = DWRITE_TEXT_METRICS::default();
+                            if sub_layout.GetMetrics(&mut sub_metrics).is_ok() {
+                                active_h += sub_metrics.height + 10.0;
+                            } else {
+                                active_h += sub_lh + 14.0;
                             }
-                            sub_cx += syl_w;
+                        } else {
+                            active_h += sub_lh + 14.0;
                         }
-                        active_h += sub_lines * sub_lh + 10.0;
-                    } else {
-                        active_h += font_size_sub_capped + 14.0;
                     }
                 }
             }
@@ -537,7 +516,8 @@ pub unsafe fn render_window_d2d(
                                 };
 
                                 if !use_karaoke {
-                                    let line_height = active_font_size + 4.0;
+                                    let line_height =
+                                        (active_font_size * 1.25).max(active_font_size + 8.0);
                                     let mut syl_data = Vec::with_capacity(line.syllables.len());
 
                                     for syl in &line.syllables {
@@ -658,6 +638,7 @@ pub unsafe fn render_window_d2d(
 
                                     let mut render_data = Vec::new();
                                     let mut current_y = line_top;
+                                    let mut main_text_bottom = line_top + line_height;
 
                                     for vline in &visual_lines {
                                         let line_origin = line_origin_x(
@@ -675,6 +656,13 @@ pub unsafe fn render_window_d2d(
                                                 layout.clone(),
                                             ));
                                             current_x += syl_w;
+                                            let mut metrics = DWRITE_TEXT_METRICS::default();
+                                            if layout.GetMetrics(&mut metrics).is_ok() {
+                                                let b = current_y + metrics.height;
+                                                if b > main_text_bottom {
+                                                    main_text_bottom = b;
+                                                }
+                                            }
                                         }
                                         current_y += line_height;
                                     }
@@ -696,13 +684,12 @@ pub unsafe fn render_window_d2d(
                                     if let Some(ref sub) = line.sub_text {
                                         if !sub.is_empty() {
                                             let font_size_sub_capped =
-                                                cfg.font_size_sub.clamp(14, 40) as f32;
+                                                (cfg.font_size_sub.clamp(14, 40) as f32)
+                                                    * responsive_scale;
                                             let min_gap = 6.0f32;
-                                            let available_bottom =
-                                                height_f - font_size_sub_capped - 20.0;
-                                            let minimal_y = current_y + min_gap;
+                                            let minimal_y = main_text_bottom + min_gap;
 
-                                            if minimal_y <= available_bottom {
+                                            if minimal_y + font_size_sub_capped <= height_f - 4.0 {
                                                 let sub_y = minimal_y;
 
                                                 let sub_layout = engine.get_cached_text_layout(
@@ -744,7 +731,8 @@ pub unsafe fn render_window_d2d(
                                     let start_ms = line.time.as_millis() as u64;
                                     let elapsed_line = adjusted_ms.saturating_sub(start_ms);
 
-                                    let line_height = active_font_size + 4.0;
+                                    let line_height =
+                                        (active_font_size * 1.25).max(active_font_size + 8.0);
 
                                     struct SylPrep<'a> {
                                         syl: &'a Syllable,
@@ -892,6 +880,7 @@ pub unsafe fn render_window_d2d(
 
                                     let mut render_data = Vec::with_capacity(prep_syls.len());
                                     let mut current_y = line_top;
+                                    let mut main_text_bottom = line_top + line_height;
 
                                     for vline in &visual_lines {
                                         let line_origin = line_origin_x(
@@ -912,6 +901,13 @@ pub unsafe fn render_window_d2d(
                                                 layout: ps.layout.clone(),
                                             });
                                             current_x += ps.width;
+                                            let mut metrics = DWRITE_TEXT_METRICS::default();
+                                            if ps.layout.GetMetrics(&mut metrics).is_ok() {
+                                                let b = current_y + metrics.height;
+                                                if b > main_text_bottom {
+                                                    main_text_bottom = b;
+                                                }
+                                            }
                                         }
                                         current_y += line_height;
                                     }
@@ -1661,11 +1657,12 @@ pub unsafe fn render_window_d2d(
                                                 .get_formatted_sub_text()
                                                 .unwrap_or_else(|| raw_sub.clone());
                                             let font_size_sub_capped =
-                                                cfg.font_size_sub.clamp(14, 40) as f32;
+                                                (cfg.font_size_sub.clamp(14, 40) as f32)
+                                                    * responsive_scale;
                                             let min_gap = 6.0f32;
                                             let available_bottom =
                                                 height_f - font_size_sub_capped - 24.0;
-                                            let minimal_y = current_y + min_gap;
+                                            let minimal_y = main_text_bottom + min_gap;
 
                                             if minimal_y <= available_bottom {
                                                 let sub_y = minimal_y;

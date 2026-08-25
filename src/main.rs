@@ -10,13 +10,16 @@ mod providers;
 mod render;
 mod settings_window;
 mod tray;
+mod updater;
 mod utils;
 mod window;
 
 use crate::app_state::{AppState, APP_STATE};
 use crate::config::load_or_create_config;
 use crate::gsmtc::spawn_media_monitor;
+use crate::lrc_parser::is_cjk;
 use crate::lyrics_api::LyricsClient;
+use crate::updater::check_for_updates_async;
 use crate::utils::trim_working_set;
 use crate::window::{create_main_window, run_event_loop};
 use std::sync::{Arc, Mutex};
@@ -27,6 +30,9 @@ async fn main() {
     let config = load_or_create_config();
     let media_handle = spawn_media_monitor();
     let lyrics_client = LyricsClient::new();
+
+    // Check for updates in the background on startup
+    check_for_updates_async(false);
 
     let app_state = Arc::new(Mutex::new(AppState {
         media: Default::default(),
@@ -219,6 +225,7 @@ async fn main() {
                             }
                         }
 
+                        let is_amll = provider.to_uppercase().contains("AMLL");
                         if let Ok(mut s) = state_clone.lock() {
                             s.is_loading = false;
                             s.lyrics_lines = parsed_lines.clone();
@@ -233,11 +240,12 @@ async fn main() {
                         tokio::spawn(async move {
                             let translation_futs =
                                 parsed_lines.iter().enumerate().filter_map(|(idx, line)| {
-                                    let needs_translation = line.sub_text.is_none()
-                                        || line
-                                            .sub_text
-                                            .as_ref()
-                                            .is_none_or(|st| st.trim().is_empty());
+                                    let sub_str = line.sub_text.as_deref().unwrap_or("").trim();
+                                    let needs_translation = is_amll
+                                        || sub_str.is_empty()
+                                        || sub_str == line.text.trim()
+                                        || (line.text.chars().any(is_cjk)
+                                            && sub_str.chars().any(is_cjk));
                                     needs_translation.then(|| {
                                         let text = line.text.clone();
                                         let client = client_trans.clone();

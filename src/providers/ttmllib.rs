@@ -147,7 +147,7 @@ pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
 
         if !spans.is_empty() {
             let p_b = p_start_str.as_deref().unwrap_or("00:00.000");
-            let p_html = if let Some(ref p_e) = p_end_str {
+            let mut p_html = if let Some(ref p_e) = p_end_str {
                 format!(
                     "      <p begin=\"{}\" end=\"{}\">\n{}\n      </p>",
                     p_b,
@@ -161,6 +161,51 @@ pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
                     spans.join("\n")
                 )
             };
+
+            let trans_val = item
+                .get("transliteration")
+                .or_else(|| item.get("romanization"))
+                .or_else(|| item.get("romaji"))
+                .or_else(|| item.get("romaja"))
+                .or_else(|| item.get("pinyin"))
+                .or_else(|| item.get("translation"));
+
+            let trans_text = trans_val
+                .and_then(|v| {
+                    v.as_str().map(|s| s.to_string()).or_else(|| {
+                        v.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                v.get("roman")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                    })
+                })
+                .unwrap_or_default();
+            let trans_clean = trans_text.trim();
+
+            if !trans_clean.is_empty() {
+                let escaped_trans = trans_clean
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                let sub_p = if let Some(ref p_e) = p_end_str {
+                    format!(
+                        "      <p begin=\"{}\" end=\"{}\" ttm:role=\"transliteration\">{}</p>",
+                        p_b, p_e, escaped_trans
+                    )
+                } else {
+                    format!(
+                        "      <p begin=\"{}\" ttm:role=\"transliteration\">{}</p>",
+                        p_b, escaped_trans
+                    )
+                };
+                p_html.push('\n');
+                p_html.push_str(&sub_p);
+            }
+
             p_blocks.push(p_html);
         }
     }
