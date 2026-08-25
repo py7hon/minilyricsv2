@@ -30,10 +30,11 @@ jobs:
         run: cargo build --release
 
       - name: Install Inno Setup
-        uses: fhac/setup-inno-setup@v2
+        run: choco install innosetup --no-progress -y
 
       - name: Compile Setup Installer (ISCC)
-        run: ISCC.exe installer.iss
+        shell: powershell
+        run: & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
       - name: Create Distribution Package (Zip)
         shell: powershell
