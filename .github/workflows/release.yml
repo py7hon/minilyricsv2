@@ -34,7 +34,8 @@ jobs:
 
       - name: Compile Setup Installer (ISCC)
         shell: powershell
-        run: & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 
       - name: Create Distribution Package (Zip)
         shell: powershell
