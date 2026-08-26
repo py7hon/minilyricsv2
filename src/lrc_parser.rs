@@ -6,6 +6,7 @@ use std::time::Duration;
 pub struct Syllable {
     pub text: String,
     pub duration: Duration,
+    pub is_background: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +20,7 @@ pub struct LrcLine {
     pub style_name: String,
     pub is_karaoke: bool,
     pub singer_index: u8,
+    pub is_background: bool,
 }
 
 pub fn unescape_xml_entities(input: &str) -> String {
@@ -84,16 +86,17 @@ fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str, p_block
     let text_lower = text.to_lowercase();
 
     // Check unison (singer_index = 2):
-    let contains_v0 = combined.contains("v0")
-        || combined.contains("agent=\"v0\"")
+    let contains_v0 = combined.contains("agent=\"v0\"")
         || combined.contains("agent='v0'")
         || p_block_lower.contains("agent=\"v0\"")
         || p_block_lower.contains("agent='v0'")
-        || p_block_lower.contains("v0");
+        || combined.contains("ttm:agent=\"v0\"")
+        || p_block_lower.contains("ttm:agent=\"v0\"")
+        || combined.contains("singer=\"0\"")
+        || combined.contains("singer='0'");
 
     let contains_unison_kw = combined.contains("unison")
         || combined.contains("together")
-        || combined.contains("both")
         || text_lower.contains("both:")
         || text_lower.contains("together:")
         || text_lower.contains("unison:")
@@ -102,22 +105,16 @@ fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str, p_block
         || text_lower.contains("[together]")
         || text_lower.contains("(together)");
 
-    let has_v1 = p_block_lower.contains("agent=\"v1\"") || p_block_lower.contains("agent='v1'");
-    let has_v2 = p_block_lower.contains("agent=\"v2\"")
-        || p_block_lower.contains("agent='v2'")
-        || p_block_lower.contains("agent=\"v3\"")
-        || p_block_lower.contains("agent='v3'");
+    let has_v1 = combined.contains("agent=\"v1\"")
+        || combined.contains("agent='v1'")
+        || p_block_lower.contains("agent=\"v1\"")
+        || p_block_lower.contains("agent='v1'")
+        || combined.contains("ttm:agent=\"v1\"")
+        || p_block_lower.contains("ttm:agent=\"v1\"")
+        || combined.contains("singer=\"1\"")
+        || combined.contains("singer='1'");
 
-    if contains_v0 || contains_unison_kw || (has_v1 && has_v2) {
-        return 2;
-    }
-
-    // Check secondary / duet singer (singer_index = 1):
-    if combined.contains("v2")
-        || combined.contains("v3")
-        || combined.contains("secondary")
-        || combined.contains("duet")
-        || combined.contains("agent=\"v2\"")
+    let has_v2 = combined.contains("agent=\"v2\"")
         || combined.contains("agent='v2'")
         || combined.contains("agent=\"v3\"")
         || combined.contains("agent='v3'")
@@ -125,7 +122,34 @@ fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str, p_block
         || p_block_lower.contains("agent='v2'")
         || p_block_lower.contains("agent=\"v3\"")
         || p_block_lower.contains("agent='v3'")
-    {
+        || combined.contains("ttm:agent=\"v2\"")
+        || p_block_lower.contains("ttm:agent=\"v2\"")
+        || combined.contains("singer=\"2\"")
+        || combined.contains("singer='2'");
+
+    if contains_v0 || contains_unison_kw || (has_v1 && has_v2) {
+        return 2;
+    }
+
+    // Check secondary / duet singer (singer_index = 1):
+    let is_secondary = combined.contains("agent=\"v2\"")
+        || combined.contains("agent='v2'")
+        || combined.contains("agent=\"v3\"")
+        || combined.contains("agent='v3'")
+        || p_block_lower.contains("agent=\"v2\"")
+        || p_block_lower.contains("agent='v2'")
+        || p_block_lower.contains("agent=\"v3\"")
+        || p_block_lower.contains("agent='v3'")
+        || combined.contains("ttm:agent=\"v2\"")
+        || p_block_lower.contains("ttm:agent=\"v2\"")
+        || combined.contains("role=\"secondary\"")
+        || combined.contains("role='secondary'")
+        || combined.contains("role=\"duet\"")
+        || combined.contains("role='duet'")
+        || combined.contains("singer=\"2\"")
+        || combined.contains("singer='2'");
+
+    if is_secondary {
         return 1;
     }
 
@@ -231,7 +255,11 @@ fn clean_inter_xml_text(raw: &str) -> Option<String> {
     }
 }
 
-fn is_word_boundary_space(inter_raw: &str) -> bool {
+fn is_word_boundary_space(
+    inter_raw: &str,
+    _prev_end: Option<std::time::Duration>,
+    _current_begin: Option<std::time::Duration>,
+) -> bool {
     if inter_raw.is_empty() {
         return false;
     }
@@ -302,6 +330,10 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
         };
         let p_end_time = end_val.as_deref().and_then(parse_ttml_time_str);
 
+        let p_is_bg = extract_xml_attr(p_block, "isBackground").as_deref() == Some("true")
+            || extract_xml_attr(p_block, "is_background").as_deref() == Some("true");
+        let mut any_span_is_bg = false;
+
         let mut syllables = Vec::new();
         let mut full_text = String::new();
         let mut inline_transliteration = String::new();
@@ -310,6 +342,7 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
 
         let p_tag_open_end = p_block.find('>').map(|i| i + 1).unwrap_or(0);
         let mut prev_span_end = p_tag_open_end;
+        let mut last_span_end_time: Option<Duration> = None;
 
         let mut span_pos = 0;
         while let Some(s_start) = p_block[span_pos..].find("<span") {
@@ -326,6 +359,20 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             let tag_attrs = &p_block[abs_s_start..s_close_tag];
             let span_text_raw = &p_block[s_close_tag..s_end];
             span_pos = s_end + 7;
+
+            let s_begin = extract_xml_attr(tag_attrs, "begin")
+                .as_deref()
+                .and_then(parse_ttml_time_str);
+            let s_end_t = extract_xml_attr(tag_attrs, "end")
+                .as_deref()
+                .and_then(parse_ttml_time_str);
+
+            let this_span_is_bg = extract_xml_attr(tag_attrs, "isBackground").as_deref()
+                == Some("true")
+                || extract_xml_attr(tag_attrs, "is_background").as_deref() == Some("true");
+            if this_span_is_bg {
+                any_span_is_bg = true;
+            }
 
             let role_val = extract_xml_attr(tag_attrs, "ttm:role")
                 .or_else(|| extract_xml_attr(tag_attrs, "role"));
@@ -352,12 +399,14 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                         }
                         full_text.push_str(to_add);
                     }
-                } else if is_word_boundary_space(inter_raw) {
+                } else if is_word_boundary_space(inter_raw, last_span_end_time, s_begin) {
                     if let Some(last_syl) = syllables.last_mut() {
                         if !last_syl.text.ends_with(' ') {
                             last_syl.text.push(' ');
-                            full_text.push(' ');
                         }
+                    }
+                    if !full_text.ends_with(' ') {
+                        full_text.push(' ');
                     }
                 }
             }
@@ -402,16 +451,11 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                 final_span_text.push(' ');
             }
 
-            let s_begin = extract_xml_attr(tag_attrs, "begin")
-                .as_deref()
-                .and_then(parse_ttml_time_str);
-            let s_end_t = extract_xml_attr(tag_attrs, "end")
-                .as_deref()
-                .and_then(parse_ttml_time_str);
-
             if s_begin.is_some() || s_end_t.is_some() {
                 is_karaoke = true;
             }
+
+            last_span_end_time = s_end_t.or(s_begin);
 
             let dur = if let (Some(b), Some(e)) = (s_begin, s_end_t) {
                 e.saturating_sub(b)
@@ -422,6 +466,7 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
             syllables.push(Syllable {
                 text: final_span_text.clone(),
                 duration: dur,
+                is_background: this_span_is_bg || p_is_bg,
             });
             full_text.push_str(&final_span_text);
         }
@@ -470,6 +515,10 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
         };
 
         let trimmed_text = full_text.trim().to_string();
+        let is_background = p_is_bg
+            || (trimmed_text.starts_with('(') && trimmed_text.ends_with(')'))
+            || (any_span_is_bg && (trimmed_text.starts_with('(') && trimmed_text.ends_with(')')));
+
         if !trimmed_text.is_empty() {
             if is_p_sub_line {
                 let mut matched = false;
@@ -494,6 +543,7 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                         style_name: "Default".to_string(),
                         is_karaoke: false,
                         singer_index,
+                        is_background,
                     });
                 }
             } else {
@@ -506,14 +556,53 @@ pub fn parse_ttml(content: &str) -> Vec<LrcLine> {
                     style_name: "Default".to_string(),
                     is_karaoke,
                     singer_index,
+                    is_background,
                 });
             }
         }
     }
 
     lines.sort_by_key(|l| l.time);
-
+    finalize_lines(&mut lines);
     lines
+}
+
+fn finalize_lines(lines: &mut [LrcLine]) {
+    for line in lines {
+        let trimmed = line.text.trim();
+        if trimmed.starts_with('(') && trimmed.ends_with(')') {
+            line.is_background = true;
+        }
+
+        if line.is_background {
+            for s in &mut line.syllables {
+                s.is_background = true;
+            }
+        } else if !line.syllables.is_empty() {
+            let mut in_parentheses = false;
+            for s in &mut line.syllables {
+                let txt = s.text.trim();
+                if txt.starts_with('(') {
+                    in_parentheses = true;
+                }
+                if in_parentheses || s.is_background {
+                    s.is_background = true;
+                }
+                if txt.ends_with(')') {
+                    in_parentheses = false;
+                }
+            }
+        }
+
+        let has_real_syllable_timing = !line.syllables.is_empty()
+            && line
+                .syllables
+                .iter()
+                .any(|s| s.duration > Duration::ZERO && s.duration != Duration::from_millis(300));
+        if has_real_syllable_timing || line.is_karaoke {
+            line.is_karaoke = true;
+        }
+    }
 }
 
 pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
@@ -571,6 +660,9 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                     if let Some(base_time) = parse_lrc_time_str(time_str) {
                         let (syllables, plain_text, is_karaoke) = parse_api_karaoke(raw_text);
                         let singer_index = detect_singer_index("", "", &plain_text, "");
+                        let trimmed_plain = plain_text.trim();
+                        let is_background =
+                            trimmed_plain.starts_with('(') && trimmed_plain.ends_with(')');
                         if !plain_text.is_empty() {
                             raw_lines.push(LrcLine {
                                 time: base_time,
@@ -581,6 +673,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                                 style_name: "Default".to_string(),
                                 is_karaoke,
                                 singer_index,
+                                is_background,
                             });
                         }
                     }
@@ -606,6 +699,7 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
                     last.syllables = line.syllables;
                     last.is_karaoke = line.is_karaoke;
                     last.singer_index = line.singer_index;
+                    last.is_background = line.is_background;
                     last.sub_text = Some(sub_val);
                 } else if last.sub_text.is_none() {
                     last.sub_text = Some(line.text);
@@ -620,6 +714,8 @@ pub fn parse_lrc(content: &str) -> Vec<LrcLine> {
         }
         lines.push(line);
     }
+
+    finalize_lines(&mut lines);
 
     for i in 0..lines.len() {
         if lines[i].end_time.is_none() && i + 1 < lines.len() {
@@ -708,7 +804,7 @@ pub fn is_cjk(c: char) -> bool {
 }
 
 fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
-    let mut syllables = Vec::new();
+    let mut syllables: Vec<Syllable> = Vec::new();
     let mut plain_text = String::new();
     let mut has_word_timestamps = false;
 
@@ -722,7 +818,11 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
                 in_duration = true;
             } else if ch == '>' {
                 in_duration = false;
-                let parsed_dur = dur_str.parse::<u64>().ok();
+                let parsed_dur = if let Ok(ms) = dur_str.parse::<u64>() {
+                    Some(ms)
+                } else {
+                    parse_lrc_time_str(&dur_str).map(|d| d.as_millis() as u64)
+                };
                 let dur_ms = parsed_dur.unwrap_or(300);
                 if parsed_dur.is_some() {
                     has_word_timestamps = true;
@@ -732,6 +832,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
                     syllables.push(Syllable {
                         text: current_text.clone(),
                         duration: Duration::from_millis(dur_ms),
+                        is_background: false,
                     });
                     plain_text.push_str(&current_text);
                 }
@@ -748,6 +849,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
             syllables.push(Syllable {
                 text: current_text.clone(),
                 duration: Duration::from_millis(300),
+                is_background: false,
             });
             plain_text.push_str(&current_text);
         }
@@ -759,6 +861,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
                     syllables.push(Syllable {
                         text: current_word.clone(),
                         duration: Duration::from_millis(300),
+                        is_background: false,
                     });
                     plain_text.push_str(&current_word);
                     current_word.clear();
@@ -766,6 +869,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
                 syllables.push(Syllable {
                     text: ch.to_string(),
                     duration: Duration::from_millis(300),
+                    is_background: false,
                 });
                 plain_text.push(ch);
             } else {
@@ -774,6 +878,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
                     syllables.push(Syllable {
                         text: current_word.clone(),
                         duration: Duration::from_millis(300),
+                        is_background: false,
                     });
                     plain_text.push_str(&current_word);
                     current_word.clear();
@@ -784,6 +889,7 @@ fn parse_api_karaoke(input: &str) -> (Vec<Syllable>, String, bool) {
             syllables.push(Syllable {
                 text: current_word.clone(),
                 duration: Duration::from_millis(300),
+                is_background: false,
             });
             plain_text.push_str(&current_word);
         }
@@ -1254,6 +1360,7 @@ pub fn parse_sub_syllables(
             result.push(Syllable {
                 text: token,
                 duration: main_syl.duration,
+                is_background: false,
             });
         }
     } else if !main_syllables.is_empty() {
@@ -1330,6 +1437,7 @@ pub fn parse_sub_syllables(
             result.push(Syllable {
                 text: token,
                 duration: Duration::from_millis(dur_ms.max(50)),
+                is_background: false,
             });
         }
     } else {
@@ -1357,6 +1465,7 @@ pub fn parse_sub_syllables(
             result.push(Syllable {
                 text: token,
                 duration: Duration::from_millis(dur_ms.max(50)),
+                is_background: false,
             });
         }
     }
@@ -1529,18 +1638,22 @@ mod tests {
             Syllable {
                 text: "きっ".into(),
                 duration: Duration::from_millis(300),
+                is_background: false,
             },
             Syllable {
                 text: "と ".into(),
                 duration: Duration::from_millis(200),
+                is_background: false,
             },
             Syllable {
                 text: "ま ".into(),
                 duration: Duration::from_millis(300),
+                is_background: false,
             },
             Syllable {
                 text: "だ ".into(),
                 duration: Duration::from_millis(200),
+                is_background: false,
             },
         ];
         let sub = "kitto mada";
@@ -1558,10 +1671,12 @@ mod tests {
             Syllable {
                 text: "Hello ".into(),
                 duration: Duration::from_millis(600),
+                is_background: false,
             },
             Syllable {
                 text: "world".into(),
                 duration: Duration::from_millis(400),
+                is_background: false,
             },
         ];
         let sub = "nǐ hǎo shì jiè";
@@ -1600,5 +1715,52 @@ mod tests {
             fix_common_romaji_misreadings("Emi tte ite hoshikute", "笑っていてほしくて"),
             "waratte ite hoshikute"
         );
+    }
+
+    #[test]
+    fn test_background_vocal_detection() {
+        let lrc = "[00:10.00]Selamanya\n[00:12.00](Selamanya)";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].is_background, false);
+        assert_eq!(lines[1].is_background, true);
+    }
+
+    #[test]
+    fn test_background_vocal_with_syllable_timing() {
+        let lrc = "[00:10.00]<200>Se<300>la<200>ma<400>nya\n[00:12.00]<150>(oh, <250>Kasihku)";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1].is_background, true);
+        assert_eq!(lines[1].is_karaoke, true);
+    }
+
+    #[test]
+    fn test_mixed_background_vocal_syllable_split() {
+        let lrc = "[00:10.00]<200>Di <300>kedua <200>bola <300>matamu <200>(oh, <300>Kasihku)";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].is_background, false);
+        assert_eq!(lines[0].syllables.len(), 6);
+        assert_eq!(lines[0].syllables[0].is_background, false);
+        assert_eq!(lines[0].syllables[1].is_background, false);
+        assert_eq!(lines[0].syllables[2].is_background, false);
+        assert_eq!(lines[0].syllables[3].is_background, false);
+        assert_eq!(lines[0].syllables[4].is_background, true); // "(oh, "
+        assert_eq!(lines[0].syllables[5].is_background, true); // "Kasihku)"
+        assert_eq!(lines[0].singer_index, 0); // Not duet!
+    }
+
+    #[test]
+    fn test_duet_singer_detection() {
+        let ttml_normal = r#"<tt xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:version="2"><body><div id="div2"><p begin="00:00:10.00">Di kedua bola matamu (oh, Kasihku)</p></div></body></tt>"#;
+        let lines1 = parse_lrc(ttml_normal);
+        assert_eq!(lines1.len(), 1);
+        assert_eq!(lines1[0].singer_index, 0); // Normal line, not duet!
+
+        let ttml_duet = r#"<tt><body><div><p begin="00:00:10.00" ttm:agent="v2">Duet line by second singer</p></div></body></tt>"#;
+        let lines2 = parse_lrc(ttml_duet);
+        assert_eq!(lines2.len(), 1);
+        assert_eq!(lines2[0].singer_index, 1); // Duet singer!
     }
 }

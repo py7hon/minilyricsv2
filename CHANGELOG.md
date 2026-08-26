@@ -1,5 +1,24 @@
-# Release Notes - v0.1.10 📜✨
+# Release Notes - v0.1.12 📜✨
 
+## 🌟 Highlights & Major Improvements
+
+- **🎤 LyricsPlus Duet & Secondary Singer Fix**:
+  - Updated `convert_kpoe_array_to_ttml` in `src/providers/ttmllib.rs` to extract the `singer` property from the `element` object inside LyricsPlus KPOE JSON. This ensures duet lines are properly assigned `ttm:agent="v2"` and correctly right-aligned on screen.
+- **🔤 TTML Word Boundary Formatting Revert**:
+  - Reverted `is_word_boundary_space` in `src/lrc_parser.rs` to its robust, original logic (ignoring XML formatting newlines). The missing word space issue is now natively handled during TTML generation (`ttmllib.rs`), preventing syllables from incorrectly splitting (e.g., `Me nya pa mu` -> `Menyapamu`).
+
+---
+
+# Release Notes - v0.1.11 📜✨
+
+- **🎨 Header Duet Coloring & Background Syllables Fixes**:
+  - Fixed single-word duet coloring bug in header lines by correcting byte-offset calculations in `DWRITE_TEXT_RANGE`.
+  - Applied background vocal row split logic, extracting background syllables (e.g., parenthesized groups like `(oh, Kasihku)`) to a secondary row with distinct styling.
+  - Handled LRCMux missing `isBackground` field by applying fallback regex pattern matching for parenthesized background syllables.
+
+---
+
+# Release Notes - v0.1.10 📜✨
 ## 🌟 Highlights & Major Improvements
 
 - **🎵 Multi-Vocal Singer Alignment & Unison Mode**:

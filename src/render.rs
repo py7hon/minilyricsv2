@@ -76,6 +76,110 @@ fn line_origin_x(
     }
 }
 
+unsafe fn get_line_block_height(
+    engine: &D2DEngine,
+    cfg: &StyleConfig,
+    line: &crate::lrc_parser::LrcLine,
+    active_font_size: f32,
+    font_size_sub_capped: f32,
+    max_w: f32,
+) -> f32 {
+    let eff_font_size = if line.is_background {
+        active_font_size * 0.70
+    } else {
+        active_font_size
+    };
+    let eff_main_lh = (eff_font_size * 1.25).max(eff_font_size + 8.0);
+    let mut total_h = eff_main_lh;
+
+    // Check if line has mixed normal + background syllables
+    let has_bg_syls = !line.is_background && line.syllables.iter().any(|s| s.is_background);
+    let main_text_for_layout = if has_bg_syls {
+        let main_part: String = line
+            .syllables
+            .iter()
+            .filter(|s| !s.is_background)
+            .map(|s| s.text.as_str())
+            .collect();
+        main_part
+    } else {
+        line.text.clone()
+    };
+
+    if let Ok(layout) = engine.get_cached_text_layout(
+        &main_text_for_layout,
+        &cfg.font_family,
+        eff_font_size,
+        true,
+        max_w,
+        eff_main_lh,
+    ) {
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        if layout.GetMetrics(&mut metrics).is_ok() {
+            total_h = metrics.height.max(eff_main_lh);
+        }
+    }
+
+    // Add height for inline background syllable row
+    if has_bg_syls {
+        let bg_font_size = eff_font_size * 0.70;
+        let bg_lh = (bg_font_size * 1.25).max(bg_font_size + 8.0);
+        let bg_text: String = line
+            .syllables
+            .iter()
+            .filter(|s| s.is_background)
+            .map(|s| s.text.as_str())
+            .collect();
+        if !bg_text.trim().is_empty() {
+            if let Ok(bg_layout) = engine.get_cached_text_layout(
+                &bg_text,
+                &cfg.font_family,
+                bg_font_size,
+                true,
+                max_w,
+                bg_lh,
+            ) {
+                let mut bg_metrics = DWRITE_TEXT_METRICS::default();
+                if bg_layout.GetMetrics(&mut bg_metrics).is_ok() {
+                    total_h += bg_metrics.height + 6.0;
+                } else {
+                    total_h += bg_lh + 6.0;
+                }
+            } else {
+                total_h += bg_lh + 6.0;
+            }
+        }
+    }
+
+    if let Some(ref raw_sub) = line.sub_text {
+        if !raw_sub.is_empty() {
+            let formatted_sub = line
+                .get_formatted_sub_text()
+                .unwrap_or_else(|| raw_sub.clone());
+            let sub_lh = (font_size_sub_capped * 1.25).max(font_size_sub_capped + 6.0);
+            if let Ok(sub_layout) = engine.get_cached_text_layout(
+                &formatted_sub,
+                &cfg.font_family,
+                font_size_sub_capped,
+                false,
+                max_w,
+                sub_lh,
+            ) {
+                let mut sub_metrics = DWRITE_TEXT_METRICS::default();
+                if sub_layout.GetMetrics(&mut sub_metrics).is_ok() {
+                    total_h += sub_metrics.height + 10.0;
+                } else {
+                    total_h += sub_lh + 14.0;
+                }
+            } else {
+                total_h += sub_lh + 14.0;
+            }
+        }
+    }
+
+    total_h
+}
+
 pub unsafe fn render_window_d2d(
     target: &ID2D1RenderTarget,
     rect: RECT,
@@ -173,6 +277,7 @@ pub unsafe fn render_window_d2d(
             if !s.media.title.is_empty() {
                 let font_size_title_capped = (cfg.font_size_title.min(40)) as f32;
                 let max_title_h = (font_size_title_capped * 2.2).max(28.0);
+
                 let title_layout = engine.get_cached_text_layout(
                     &s.media.title,
                     &cfg.font_family,
@@ -237,7 +342,11 @@ pub unsafe fn render_window_d2d(
 
             let responsive_scale = if current_idx < s.lyrics_lines.len() {
                 let active_line = &s.lyrics_lines[current_idx];
-                let font_size = raw_active_font_size;
+                let font_size = if active_line.is_background {
+                    raw_active_font_size * 0.70
+                } else {
+                    raw_active_font_size
+                };
                 let lh = font_size + 4.0;
 
                 if let Ok(layout) = engine.get_cached_text_layout(
@@ -270,50 +379,34 @@ pub unsafe fn render_window_d2d(
             let active_font_size = raw_active_font_size * responsive_scale;
             let font_size_sub_capped = (cfg.font_size_sub.clamp(14, 40) as f32) * responsive_scale;
             let _active_karaoke_color = hex_to_d2d_color(&cfg.karaoke_hex, 1.0);
-            let active_text_color = hex_to_d2d_color(&cfg.active_hex, 1.0);
+            let _active_text_color = hex_to_d2d_color(&cfg.active_hex, 1.0);
 
             let main_lh = (active_font_size * 1.25).max(active_font_size + 8.0);
             let mut active_h = main_lh;
 
             if current_idx < s.lyrics_lines.len() {
                 let active_line = &s.lyrics_lines[current_idx];
-                if let Ok(layout) = engine.get_cached_text_layout(
-                    &active_line.text,
-                    &cfg.font_family,
+                active_h = get_line_block_height(
+                    engine,
+                    cfg,
+                    active_line,
                     active_font_size,
-                    true,
+                    font_size_sub_capped,
                     max_w,
-                    main_lh,
-                ) {
-                    let mut metrics = DWRITE_TEXT_METRICS::default();
-                    if layout.GetMetrics(&mut metrics).is_ok() {
-                        active_h = metrics.height.max(main_lh);
-                    }
-                }
+                );
 
-                if let Some(ref raw_sub) = active_line.sub_text {
-                    if !raw_sub.is_empty() {
-                        let formatted_sub = active_line
-                            .get_formatted_sub_text()
-                            .unwrap_or_else(|| raw_sub.clone());
-                        let sub_lh = (font_size_sub_capped * 1.25).max(font_size_sub_capped + 6.0);
-                        if let Ok(sub_layout) = engine.get_cached_text_layout(
-                            &formatted_sub,
-                            &cfg.font_family,
+                if !active_line.is_background && current_idx + 1 < s.lyrics_lines.len() {
+                    let next_line = &s.lyrics_lines[current_idx + 1];
+                    if next_line.is_background {
+                        let bg_h = get_line_block_height(
+                            engine,
+                            cfg,
+                            next_line,
+                            active_font_size,
                             font_size_sub_capped,
-                            false,
                             max_w,
-                            sub_lh,
-                        ) {
-                            let mut sub_metrics = DWRITE_TEXT_METRICS::default();
-                            if sub_layout.GetMetrics(&mut sub_metrics).is_ok() {
-                                active_h += sub_metrics.height + 10.0;
-                            } else {
-                                active_h += sub_lh + 14.0;
-                            }
-                        } else {
-                            active_h += sub_lh + 14.0;
-                        }
+                        );
+                        active_h += bg_h + 12.0;
                     }
                 }
             }
@@ -387,26 +480,81 @@ pub unsafe fn render_window_d2d(
                         let line = &s.lyrics_lines[target_idx as usize];
                         let distance_from_float = (target_idx as f32) - float_idx;
 
-                        let line_top = if offset <= 0 {
-                            active_center_y + distance_from_float * base_step
+                        let line_top = if distance_from_float <= 0.0 {
+                            let prev_h = get_line_block_height(
+                                engine,
+                                cfg,
+                                line,
+                                active_font_size,
+                                font_size_sub_capped,
+                                max_w,
+                            );
+                            let step_prev = prev_h.max(base_step) + 12.0;
+                            active_center_y + distance_from_float * step_prev
+                        } else if line.is_background
+                            && target_idx > 0
+                            && !s.lyrics_lines[(target_idx - 1) as usize].is_background
+                        {
+                            let main_block_h = get_line_block_height(
+                                engine,
+                                cfg,
+                                &s.lyrics_lines[(target_idx - 1) as usize],
+                                active_font_size,
+                                font_size_sub_capped,
+                                max_w,
+                            );
+                            active_center_y
+                                + (main_block_h + 6.0) * distance_from_float.min(1.0)
+                                + (distance_from_float - 1.0).max(0.0) * base_step
                         } else {
                             active_center_y
-                                + active_h
-                                + 12.0
-                                + (distance_from_float - 1.0) * base_step
+                                + (active_h + 12.0) * distance_from_float.min(1.0)
+                                + (distance_from_float - 1.0).max(0.0) * base_step
                         };
 
                         if offset != 0 && line_top < header_bottom {
                             continue;
                         }
 
-                        let active_karaoke_color = if line.singer_index > 0 {
-                            hex_to_d2d_color(&cfg.karaoke_v2_hex, 1.0)
+                        let is_paired_bg_of_active = line.is_background
+                            && target_idx > 0
+                            && (target_idx as usize) - 1 == current_idx
+                            && !s.lyrics_lines[(target_idx - 1) as usize].is_background;
+
+                        let is_active = offset == 0 || is_paired_bg_of_active;
+
+                        let (mut active_karaoke_color, mut active_text_color) = if is_active {
+                            let k_col = if line.singer_index > 0 {
+                                hex_to_d2d_color(&cfg.karaoke_v2_hex, 1.0)
+                            } else {
+                                hex_to_d2d_color(&cfg.karaoke_hex, 1.0)
+                            };
+                            let t_col = hex_to_d2d_color(&cfg.active_hex, 1.0);
+                            (k_col, t_col)
                         } else {
-                            hex_to_d2d_color(&cfg.karaoke_hex, 1.0)
+                            let side_col = hex_to_d2d_color(&cfg.side_hex, 0.70);
+                            (side_col, side_col)
                         };
 
-                        let is_active = offset == 0;
+                        if line.is_background {
+                            active_karaoke_color.a = (active_karaoke_color.a * 0.75).min(0.75);
+                            active_text_color.a = (active_text_color.a * 0.75).min(0.75);
+                        }
+                        let eff_font_size = if is_active {
+                            if line.is_background {
+                                active_font_size * 0.70
+                            } else {
+                                active_font_size
+                            }
+                        } else {
+                            let font_size_side_capped = (cfg.font_size_side.min(40)) as f32;
+                            if line.is_background {
+                                font_size_side_capped * 0.70
+                            } else {
+                                font_size_side_capped
+                            }
+                        };
+
                         let is_instrumental = line.text.trim() == "♪"
                             || line.text.to_lowercase().contains("instrumental")
                             || line.text.contains('♪');
@@ -517,168 +665,114 @@ pub unsafe fn render_window_d2d(
 
                                 if !use_karaoke {
                                     let line_height =
-                                        (active_font_size * 1.25).max(active_font_size + 8.0);
-                                    let mut syl_data = Vec::with_capacity(line.syllables.len());
+                                        (eff_font_size * 1.25).max(eff_font_size + 8.0);
 
-                                    for syl in &line.syllables {
-                                        let layout = engine.get_cached_text_layout(
-                                            &syl.text,
-                                            &cfg.font_family,
-                                            active_font_size,
-                                            true,
-                                            max_w,
-                                            line_height,
-                                        )?;
-                                        let mut metrics = DWRITE_TEXT_METRICS::default();
-                                        layout.GetMetrics(&mut metrics)?;
-                                        let syl_width = metrics.widthIncludingTrailingWhitespace;
-                                        syl_data.push((layout, syl_width, syl.text.clone()));
-                                    }
+                                    let has_inline_bg_nk = !line.is_background
+                                        && line.syllables.iter().any(|s| s.is_background);
 
-                                    struct WordUnitNonKaraoke {
-                                        items: Vec<(IDWriteTextLayout, f32, String)>,
-                                        width: f32,
-                                    }
-
-                                    let mut word_units: Vec<WordUnitNonKaraoke> = Vec::new();
-                                    let mut cur_unit_items = Vec::new();
-                                    let mut cur_unit_w = 0.0f32;
-                                    let mut prev_ends_with_space = true;
-
-                                    for (layout, syl_w, text_str) in syl_data {
-                                        let starts_with_space =
-                                            text_str.starts_with(' ') || text_str.starts_with('\t');
-                                        let is_new_word = prev_ends_with_space || starts_with_space;
-
-                                        if is_new_word && !cur_unit_items.is_empty() {
-                                            word_units.push(WordUnitNonKaraoke {
-                                                items: cur_unit_items,
-                                                width: cur_unit_w,
-                                            });
-                                            cur_unit_items = Vec::new();
-                                            cur_unit_w = 0.0;
-                                        }
-
-                                        prev_ends_with_space =
-                                            text_str.ends_with(' ') || text_str.ends_with('\t');
-                                        cur_unit_w += syl_w;
-                                        cur_unit_items.push((layout, syl_w, text_str));
-                                    }
-                                    if !cur_unit_items.is_empty() {
-                                        word_units.push(WordUnitNonKaraoke {
-                                            items: cur_unit_items,
-                                            width: cur_unit_w,
-                                        });
-                                    }
-
-                                    struct VisualLineNonKaraoke {
-                                        items: Vec<(IDWriteTextLayout, f32)>,
-                                        width: f32,
-                                        snippet: String,
-                                    }
-
-                                    let mut visual_lines: Vec<VisualLineNonKaraoke> = Vec::new();
-                                    let mut current_items = Vec::new();
-                                    let mut current_w = 0.0f32;
-                                    let mut current_text = String::new();
-
-                                    for unit in word_units {
-                                        if current_w + unit.width <= max_w {
-                                            current_w += unit.width;
-                                            for (layout, syl_w, text_str) in unit.items {
-                                                current_text.push_str(&text_str);
-                                                current_items.push((layout, syl_w));
-                                            }
+                                    let text_to_draw = if has_inline_bg_nk {
+                                        // Main text from non-bg syllables only
+                                        let main_part: String = line
+                                            .syllables
+                                            .iter()
+                                            .filter(|s| !s.is_background)
+                                            .map(|s| s.text.as_str())
+                                            .collect();
+                                        if main_part.is_empty() {
+                                            line.text.clone()
                                         } else {
-                                            if !current_items.is_empty() {
-                                                visual_lines.push(VisualLineNonKaraoke {
-                                                    items: current_items,
-                                                    width: current_w,
-                                                    snippet: current_text,
-                                                });
-                                                current_items = Vec::new();
-                                                current_w = 0.0;
-                                                current_text = String::new();
-                                            }
-
-                                            if unit.width <= max_w {
-                                                current_w = unit.width;
-                                                for (layout, syl_w, text_str) in unit.items {
-                                                    current_text.push_str(&text_str);
-                                                    current_items.push((layout, syl_w));
-                                                }
-                                            } else {
-                                                for (layout, syl_w, text_str) in unit.items {
-                                                    if current_w + syl_w > max_w
-                                                        && !current_items.is_empty()
-                                                    {
-                                                        visual_lines.push(VisualLineNonKaraoke {
-                                                            items: current_items,
-                                                            width: current_w,
-                                                            snippet: current_text,
-                                                        });
-                                                        current_items = Vec::new();
-                                                        current_w = 0.0;
-                                                        current_text = String::new();
-                                                    }
-                                                    current_w += syl_w;
-                                                    current_text.push_str(&text_str);
-                                                    current_items.push((layout, syl_w));
-                                                }
-                                            }
+                                            main_part
                                         }
-                                    }
-                                    if !current_items.is_empty() {
-                                        visual_lines.push(VisualLineNonKaraoke {
-                                            items: current_items,
-                                            width: current_w,
-                                            snippet: current_text,
-                                        });
-                                    }
+                                    } else if !line.text.is_empty() {
+                                        line.text.clone()
+                                    } else {
+                                        line.syllables
+                                            .iter()
+                                            .map(|s| s.text.as_str())
+                                            .collect::<String>()
+                                    };
 
-                                    let mut render_data = Vec::new();
-                                    let mut current_y = line_top;
-                                    let mut main_text_bottom = line_top + line_height;
+                                    let line_layout = engine.get_cached_text_layout(
+                                        &text_to_draw,
+                                        &cfg.font_family,
+                                        eff_font_size,
+                                        true,
+                                        max_w,
+                                        line_height,
+                                    )?;
+                                    let mut metrics = DWRITE_TEXT_METRICS::default();
+                                    line_layout.GetMetrics(&mut metrics)?;
 
-                                    for vline in &visual_lines {
-                                        let line_origin = line_origin_x(
-                                            target_idx as usize,
-                                            line.singer_index,
-                                            width_f,
-                                            vline.width,
-                                            &vline.snippet,
-                                        );
-                                        let mut current_x = line_origin;
-                                        for (layout, syl_w) in &vline.items {
-                                            render_data.push((
-                                                current_x,
-                                                current_y,
-                                                layout.clone(),
-                                            ));
-                                            current_x += syl_w;
-                                            let mut metrics = DWRITE_TEXT_METRICS::default();
-                                            if layout.GetMetrics(&mut metrics).is_ok() {
-                                                let b = current_y + metrics.height;
-                                                if b > main_text_bottom {
-                                                    main_text_bottom = b;
-                                                }
-                                            }
+                                    let mut main_text_bottom =
+                                        line_top + metrics.height.max(line_height);
+                                    let line_width = metrics.widthIncludingTrailingWhitespace;
+                                    let line_x = line_origin_x(
+                                        target_idx as usize,
+                                        line.singer_index,
+                                        width_f,
+                                        line_width,
+                                        &text_to_draw,
+                                    );
+
+                                    let draw_color = if is_active {
+                                        active_karaoke_color
+                                    } else {
+                                        hex_to_d2d_color(&cfg.side_hex, 0.7)
+                                    };
+
+                                    draw_text_with_shadow(
+                                        target,
+                                        &reusable_brush,
+                                        &line_layout,
+                                        line_x,
+                                        line_top,
+                                        &draw_color,
+                                        cfg,
+                                    );
+
+                                    // Render inline bg row for non-karaoke
+                                    if has_inline_bg_nk {
+                                        let bg_text: String = line
+                                            .syllables
+                                            .iter()
+                                            .filter(|s| s.is_background)
+                                            .map(|s| s.text.as_str())
+                                            .collect();
+                                        if !bg_text.trim().is_empty() {
+                                            let bg_fs = eff_font_size * 0.70;
+                                            let bg_lh = (bg_fs * 1.25).max(bg_fs + 8.0);
+                                            let bg_layout = engine.get_cached_text_layout(
+                                                &bg_text,
+                                                &cfg.font_family,
+                                                bg_fs,
+                                                true,
+                                                max_w,
+                                                bg_lh,
+                                            )?;
+                                            let mut bg_met = DWRITE_TEXT_METRICS::default();
+                                            bg_layout.GetMetrics(&mut bg_met)?;
+                                            let bg_w = bg_met.widthIncludingTrailingWhitespace;
+                                            let bg_y = main_text_bottom + 6.0;
+                                            let bg_x = line_origin_x(
+                                                target_idx as usize,
+                                                line.singer_index,
+                                                width_f,
+                                                bg_w,
+                                                &bg_text,
+                                            );
+                                            let mut bg_color = draw_color;
+                                            bg_color.a = (bg_color.a * 0.75).min(0.75);
+                                            draw_text_with_shadow(
+                                                target,
+                                                &reusable_brush,
+                                                &bg_layout,
+                                                bg_x,
+                                                bg_y,
+                                                &bg_color,
+                                                cfg,
+                                            );
+                                            main_text_bottom = bg_y + bg_met.height.max(bg_lh);
                                         }
-                                        current_y += line_height;
-                                    }
-
-                                    let _total_box_height = (current_y - line_top).max(line_height);
-
-                                    for (x, y, layout) in &render_data {
-                                        draw_text_with_shadow(
-                                            target,
-                                            &reusable_brush,
-                                            layout,
-                                            *x,
-                                            *y,
-                                            &active_karaoke_color,
-                                            cfg,
-                                        );
                                     }
 
                                     if let Some(ref sub) = line.sub_text {
@@ -732,7 +826,7 @@ pub unsafe fn render_window_d2d(
                                     let elapsed_line = adjusted_ms.saturating_sub(start_ms);
 
                                     let line_height =
-                                        (active_font_size * 1.25).max(active_font_size + 8.0);
+                                        (eff_font_size * 1.25).max(eff_font_size + 8.0);
 
                                     struct SylPrep<'a> {
                                         syl: &'a Syllable,
@@ -741,8 +835,15 @@ pub unsafe fn render_window_d2d(
                                         progress: f32,
                                     }
 
+                                    let has_inline_bg_syls = !line.is_background
+                                        && line.syllables.iter().any(|s| s.is_background);
+                                    let bg_font_size_k = eff_font_size * 0.70;
+                                    let bg_line_height_k =
+                                        (bg_font_size_k * 1.25).max(bg_font_size_k + 8.0);
+
                                     let mut accumulated_syl_time = 0u64;
                                     let mut prep_syls = Vec::with_capacity(line.syllables.len());
+                                    let mut bg_prep_syls: Vec<SylPrep> = Vec::new();
 
                                     for syl in &line.syllables {
                                         let syl_start = accumulated_syl_time;
@@ -756,24 +857,42 @@ pub unsafe fn render_window_d2d(
                                             0.0
                                         };
 
+                                        let is_bg_syl = has_inline_bg_syls && syl.is_background;
+                                        let syl_fs = if is_bg_syl {
+                                            bg_font_size_k
+                                        } else {
+                                            eff_font_size
+                                        };
+                                        let syl_lh = if is_bg_syl {
+                                            bg_line_height_k
+                                        } else {
+                                            line_height
+                                        };
+
                                         let layout = engine.get_cached_text_layout(
                                             &syl.text,
                                             &cfg.font_family,
-                                            active_font_size,
+                                            syl_fs,
                                             true,
                                             max_w,
-                                            line_height,
+                                            syl_lh,
                                         )?;
                                         let mut metrics = DWRITE_TEXT_METRICS::default();
                                         layout.GetMetrics(&mut metrics)?;
                                         let syl_width = metrics.widthIncludingTrailingWhitespace;
 
-                                        prep_syls.push(SylPrep {
+                                        let prep = SylPrep {
                                             syl,
                                             layout,
                                             width: syl_width,
                                             progress: syl_progress,
-                                        });
+                                        };
+
+                                        if is_bg_syl {
+                                            bg_prep_syls.push(prep);
+                                        } else {
+                                            prep_syls.push(prep);
+                                        }
                                     }
 
                                     struct WordUnitKaraoke<'a> {
@@ -999,7 +1118,7 @@ pub unsafe fn render_window_d2d(
                                                 let curr_center_x = rs.x + (rs.width / 2.0);
 
                                                 let star_size =
-                                                    (active_font_size * 0.50).clamp(12.0, 22.0);
+                                                    (eff_font_size * 0.50).clamp(12.0, 22.0);
                                                 let center_y_base =
                                                     rs.y + (line_height / 2.0) - (star_size * 0.55);
 
@@ -1009,7 +1128,7 @@ pub unsafe fn render_window_d2d(
                                                 let star_x = prev_center_x
                                                     + (curr_center_x - prev_center_x) * ease_x;
                                                 let bounce_h = (t * std::f32::consts::PI).sin()
-                                                    * (active_font_size * 0.48).clamp(10.0, 18.0);
+                                                    * (eff_font_size * 0.48).clamp(10.0, 18.0);
                                                 let star_y = center_y_base - bounce_h;
 
                                                 // Smooth quad-ease fade-out resting on the word center
@@ -1093,7 +1212,7 @@ pub unsafe fn render_window_d2d(
                                                             .get_cached_text_layout(
                                                                 glyph,
                                                                 &cfg.font_family,
-                                                                (active_font_size * font_scale)
+                                                                (eff_font_size * font_scale)
                                                                     .clamp(8.0, 18.0),
                                                                 true,
                                                                 20.0,
@@ -1129,7 +1248,7 @@ pub unsafe fn render_window_d2d(
                                                 let star_layout = engine.get_cached_text_layout(
                                                     "★",
                                                     &cfg.font_family,
-                                                    (active_font_size * 0.52).clamp(13.0, 24.0),
+                                                    (eff_font_size * 0.52).clamp(13.0, 24.0),
                                                     true,
                                                     25.0,
                                                     25.0,
@@ -1540,7 +1659,7 @@ pub unsafe fn render_window_d2d(
                                                     r: (base_color.r + flash_factor).min(1.0),
                                                     g: (base_color.g + flash_factor).min(1.0),
                                                     b: (base_color.b + flash_factor).min(1.0),
-                                                    a: 1.0,
+                                                    a: active_karaoke_color.a,
                                                 };
                                                 draw_text_with_shadow(
                                                     target,
@@ -1560,8 +1679,12 @@ pub unsafe fn render_window_d2d(
                                                     (2.0 - (hue * 6.0 - 2.0).abs()).clamp(0.0, 1.0);
                                                 let b =
                                                     (2.0 - (hue * 6.0 - 4.0).abs()).clamp(0.0, 1.0);
-                                                let rainbow_color =
-                                                    D2D1_COLOR_F { r, g, b, a: 1.0 };
+                                                let rainbow_color = D2D1_COLOR_F {
+                                                    r,
+                                                    g,
+                                                    b,
+                                                    a: active_karaoke_color.a,
+                                                };
                                                 draw_text_with_shadow(
                                                     target,
                                                     &reusable_brush,
@@ -1649,6 +1772,122 @@ pub unsafe fn render_window_d2d(
                                                 target.SetTransform(&identity);
                                             }
                                         }
+                                    }
+
+                                    // Render inline background syllables as a separate row below
+                                    if has_inline_bg_syls && !bg_prep_syls.is_empty() {
+                                        let bg_gap = 6.0f32;
+                                        let bg_row_y = main_text_bottom + bg_gap;
+
+                                        // Build word units for bg syllables
+                                        let mut bg_word_units: Vec<WordUnitKaraoke> = Vec::new();
+                                        let mut bg_cur_items = Vec::new();
+                                        let mut bg_cur_w = 0.0f32;
+                                        let mut bg_prev_sp = true;
+
+                                        for ps in &bg_prep_syls {
+                                            let t = &ps.syl.text;
+                                            let starts_sp =
+                                                t.starts_with(' ') || t.starts_with('\t');
+                                            let is_new = bg_prev_sp || starts_sp;
+                                            if is_new && !bg_cur_items.is_empty() {
+                                                bg_word_units.push(WordUnitKaraoke {
+                                                    items: bg_cur_items,
+                                                    width: bg_cur_w,
+                                                });
+                                                bg_cur_items = Vec::new();
+                                                bg_cur_w = 0.0;
+                                            }
+                                            bg_prev_sp = t.ends_with(' ') || t.ends_with('\t');
+                                            bg_cur_w += ps.width;
+                                            bg_cur_items.push(ps);
+                                        }
+                                        if !bg_cur_items.is_empty() {
+                                            bg_word_units.push(WordUnitKaraoke {
+                                                items: bg_cur_items,
+                                                width: bg_cur_w,
+                                            });
+                                        }
+
+                                        // Build visual lines for bg
+                                        let mut bg_vlines: Vec<VisualLineKaraoke> = Vec::new();
+                                        let mut bg_v_items = Vec::new();
+                                        let mut bg_v_w = 0.0f32;
+                                        let mut bg_v_text = String::new();
+                                        for unit in bg_word_units {
+                                            if bg_v_w + unit.width <= max_w {
+                                                bg_v_w += unit.width;
+                                                for ps in unit.items {
+                                                    bg_v_text.push_str(&ps.syl.text);
+                                                    bg_v_items.push(ps);
+                                                }
+                                            } else {
+                                                if !bg_v_items.is_empty() {
+                                                    bg_vlines.push(VisualLineKaraoke {
+                                                        items: bg_v_items,
+                                                        width: bg_v_w,
+                                                        snippet: bg_v_text,
+                                                    });
+                                                    bg_v_items = Vec::new();
+                                                    bg_v_text = String::new();
+                                                }
+                                                bg_v_w = unit.width;
+                                                for ps in unit.items {
+                                                    bg_v_text.push_str(&ps.syl.text);
+                                                    bg_v_items.push(ps);
+                                                }
+                                            }
+                                        }
+                                        if !bg_v_items.is_empty() {
+                                            bg_vlines.push(VisualLineKaraoke {
+                                                items: bg_v_items,
+                                                width: bg_v_w,
+                                                snippet: bg_v_text,
+                                            });
+                                        }
+
+                                        // Render bg visual lines
+                                        let mut bg_y = bg_row_y;
+                                        let mut bg_karaoke_color = active_karaoke_color;
+                                        bg_karaoke_color.a = (bg_karaoke_color.a * 0.75).min(0.75);
+                                        let mut bg_text_color = active_text_color;
+                                        bg_text_color.a = (bg_text_color.a * 0.75).min(0.75);
+
+                                        for vline in &bg_vlines {
+                                            let bg_origin = line_origin_x(
+                                                target_idx as usize,
+                                                line.singer_index,
+                                                width_f,
+                                                vline.width,
+                                                &vline.snippet,
+                                            );
+                                            let mut bx = bg_origin;
+                                            for ps in &vline.items {
+                                                let syl_color = if ps.progress >= 1.0 {
+                                                    bg_karaoke_color
+                                                } else if ps.progress > 0.0 {
+                                                    lerp_d2d_color(
+                                                        &bg_text_color,
+                                                        &bg_karaoke_color,
+                                                        ps.progress,
+                                                    )
+                                                } else {
+                                                    bg_text_color
+                                                };
+                                                draw_text_with_shadow(
+                                                    target,
+                                                    &reusable_brush,
+                                                    &ps.layout,
+                                                    bx,
+                                                    bg_y,
+                                                    &syl_color,
+                                                    cfg,
+                                                );
+                                                bx += ps.width;
+                                            }
+                                            bg_y += bg_line_height_k;
+                                        }
+                                        main_text_bottom = bg_y;
                                     }
 
                                     if let Some(ref raw_sub) = line.sub_text {
@@ -1823,13 +2062,18 @@ pub unsafe fn render_window_d2d(
                             }
                         } else {
                             let font_size_side_capped = (cfg.font_size_side.min(40)) as f32;
+                            let eff_side_font_size = if line.is_background {
+                                font_size_side_capped * 0.70
+                            } else {
+                                font_size_side_capped
+                            };
                             let side_layout = engine.get_cached_text_layout(
                                 &line.text,
                                 &cfg.font_family,
-                                font_size_side_capped,
+                                eff_side_font_size,
                                 false,
                                 width_f - 30.0,
-                                font_size_side_capped + 20.0,
+                                eff_side_font_size + 20.0,
                             )?;
                             let mut side_metrics = DWRITE_TEXT_METRICS::default();
                             side_layout.GetMetrics(&mut side_metrics)?;
@@ -1843,7 +2087,12 @@ pub unsafe fn render_window_d2d(
                             );
 
                             let distance = (target_idx as f32 - float_idx).abs();
-                            let side_alpha = if distance > 0.8 { 0.4 } else { 0.75 };
+                            let base_side_alpha = if distance > 0.8 { 0.4 } else { 0.75 };
+                            let side_alpha = if line.is_background {
+                                base_side_alpha * 0.75
+                            } else {
+                                base_side_alpha
+                            };
                             let side_color = hex_to_d2d_color(&cfg.side_hex, side_alpha);
                             draw_text_with_shadow(
                                 target,

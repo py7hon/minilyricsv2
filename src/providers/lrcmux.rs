@@ -58,7 +58,7 @@ fn convert_lrcmux_lines_to_lrc(lines: &[Value]) -> Option<String> {
                         let w_sec_rem = w_secs % 60;
                         let w_centis = (w_start % 1000) / 10;
                         line_str.push_str(&format!(
-                            " <{:02}:{:02}.{:02}>{}",
+                            "<{:02}:{:02}.{:02}>{}",
                             w_mins, w_sec_rem, w_centis, w_text
                         ));
                     }
@@ -93,7 +93,9 @@ fn parse_lrcmux_response(text: &str) -> Option<LyricsResult> {
 
     // 1. Handle native LRCMux response with "lines" array (`{ "lines": [ { "start", "words", ... } ] }`)
     if let Some(lines_arr) = v.get("lines").and_then(|l| l.as_array()) {
-        if let Some(synced) = convert_lrcmux_lines_to_lrc(lines_arr) {
+        if let Some(synced) = crate::providers::ttmllib::convert_kpoe_array_to_ttml(lines_arr)
+            .or_else(|| convert_lrcmux_lines_to_lrc(lines_arr))
+        {
             return Some(LyricsResult {
                 synced: Some(synced),
                 plain: None,
@@ -167,4 +169,80 @@ pub async fn fetch_lrcmux_lyrics(
     }
 
     Err("LRCMux returned non-ok status or no lyrics".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lrc_parser::parse_lrc;
+
+    #[test]
+    fn test_parse_lrcmux_lines_array_single_spacing_and_karaoke() {
+        let json = r#"{
+            "lines": [
+                {
+                    "start": 10000,
+                    "words": [
+                        { "text": "Kauizinkanku ", "start": 10000 },
+                        { "text": "berlaga ", "start": 10500 },
+                        { "text": "mengarungi ", "start": 11000 },
+                        { "text": "dunia ", "start": 11500 },
+                        { "text": "(mengarungi ", "start": 12000 },
+                        { "text": "dunia)", "start": 12500 }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = parse_lrcmux_response(json);
+        assert!(result.is_some());
+        let synced = result.unwrap().synced.unwrap();
+
+        let lines = parse_lrc(&synced);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].is_karaoke, true);
+        assert_eq!(
+            lines[0].text,
+            "Kauizinkanku berlaga mengarungi dunia (mengarungi dunia)"
+        );
+        assert_eq!(lines[0].syllables.len(), 6);
+        assert_eq!(lines[0].syllables[0].text, "Kauizinkanku ");
+        assert_eq!(lines[0].syllables[0].is_background, false);
+        assert_eq!(lines[0].syllables[4].text, "(mengarungi ");
+        assert_eq!(lines[0].syllables[4].is_background, true);
+        assert_eq!(lines[0].syllables[5].text, "dunia)");
+        assert_eq!(lines[0].syllables[5].is_background, true);
+    }
+
+    #[test]
+    fn test_parse_lrcmux_duet_singer_alignment() {
+        let json = r#"{
+            "lines": [
+                {
+                    "start": 5000,
+                    "singer": 1,
+                    "text": "Tapi bagiku biasa saja"
+                },
+                {
+                    "start": 10000,
+                    "singer": 2,
+                    "words": [
+                        { "text": "Menyapamu ", "start": 10000 },
+                        { "text": "tak ", "start": 10500 },
+                        { "text": "berani", "start": 11000 }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = parse_lrcmux_response(json);
+        assert!(result.is_some());
+        let synced = result.unwrap().synced.unwrap();
+
+        let lines = parse_lrc(&synced);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].singer_index, 0); // Singer 1 -> Left
+        assert_eq!(lines[1].singer_index, 1); // Singer 2 -> Right
+        assert_eq!(lines[1].is_karaoke, true);
+    }
 }
