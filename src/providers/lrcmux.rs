@@ -200,18 +200,18 @@ mod tests {
 
         let lines = parse_lrc(&synced);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].is_karaoke, true);
+        assert!(lines[0].is_karaoke);
         assert_eq!(
             lines[0].text,
             "Kauizinkanku berlaga mengarungi dunia (mengarungi dunia)"
         );
         assert_eq!(lines[0].syllables.len(), 6);
         assert_eq!(lines[0].syllables[0].text, "Kauizinkanku ");
-        assert_eq!(lines[0].syllables[0].is_background, false);
+        assert!(!lines[0].syllables[0].is_background);
         assert_eq!(lines[0].syllables[4].text, "(mengarungi ");
-        assert_eq!(lines[0].syllables[4].is_background, true);
+        assert!(lines[0].syllables[4].is_background);
         assert_eq!(lines[0].syllables[5].text, "dunia)");
-        assert_eq!(lines[0].syllables[5].is_background, true);
+        assert!(lines[0].syllables[5].is_background);
     }
 
     #[test]
@@ -243,6 +243,6 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].singer_index, 0); // Singer 1 -> Left
         assert_eq!(lines[1].singer_index, 1); // Singer 2 -> Right
-        assert_eq!(lines[1].is_karaoke, true);
+        assert!(lines[1].is_karaoke);
     }
 }

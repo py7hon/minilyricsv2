@@ -1722,8 +1722,8 @@ mod tests {
         let lrc = "[00:10.00]Selamanya\n[00:12.00](Selamanya)";
         let lines = parse_lrc(lrc);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].is_background, false);
-        assert_eq!(lines[1].is_background, true);
+        assert!(!lines[0].is_background);
+        assert!(lines[1].is_background);
     }
 
     #[test]
@@ -1731,8 +1731,8 @@ mod tests {
         let lrc = "[00:10.00]<200>Se<300>la<200>ma<400>nya\n[00:12.00]<150>(oh, <250>Kasihku)";
         let lines = parse_lrc(lrc);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1].is_background, true);
-        assert_eq!(lines[1].is_karaoke, true);
+        assert!(lines[1].is_background);
+        assert!(lines[1].is_karaoke);
     }
 
     #[test]
@@ -1740,14 +1740,14 @@ mod tests {
         let lrc = "[00:10.00]<200>Di <300>kedua <200>bola <300>matamu <200>(oh, <300>Kasihku)";
         let lines = parse_lrc(lrc);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].is_background, false);
+        assert!(!lines[0].is_background);
         assert_eq!(lines[0].syllables.len(), 6);
-        assert_eq!(lines[0].syllables[0].is_background, false);
-        assert_eq!(lines[0].syllables[1].is_background, false);
-        assert_eq!(lines[0].syllables[2].is_background, false);
-        assert_eq!(lines[0].syllables[3].is_background, false);
-        assert_eq!(lines[0].syllables[4].is_background, true); // "(oh, "
-        assert_eq!(lines[0].syllables[5].is_background, true); // "Kasihku)"
+        assert!(!lines[0].syllables[0].is_background);
+        assert!(!lines[0].syllables[1].is_background);
+        assert!(!lines[0].syllables[2].is_background);
+        assert!(!lines[0].syllables[3].is_background);
+        assert!(lines[0].syllables[4].is_background); // "(oh, "
+        assert!(lines[0].syllables[5].is_background); // "Kasihku)"
         assert_eq!(lines[0].singer_index, 0); // Not duet!
     }
 
