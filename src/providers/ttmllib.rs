@@ -252,9 +252,16 @@ pub fn convert_kpoe_array_to_ttml(lines_arr: &[Value]) -> Option<String> {
                     " ttm:agent=\"v1\"".to_string()
                 } else if s_lower == "v0"
                     || s_lower == "0"
+                    || s_lower == "v1000"
+                    || s_lower == "1000"
+                    || s_lower.starts_with("v10")
                     || s_lower == "both"
                     || s_lower == "together"
                     || s_lower == "unison"
+                    || s_lower == "group"
+                    || s_lower == "all"
+                    || s_lower == "chorus"
+                    || s_lower == "choir"
                 {
                     " ttm:agent=\"v0\"".to_string()
                 } else {

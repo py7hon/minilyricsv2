@@ -146,3 +146,72 @@ pub fn clean_artist_name(artist: &str) -> String {
 
     a.trim().to_string()
 }
+
+/// Hasilkan variasi nama artist untuk pencarian lirik,
+/// misalnya mengganti " dan " <-> " & " <-> " and " <-> ", ".
+pub fn get_artist_variations(artist: &str) -> Vec<String> {
+    let raw = artist.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    let mut vars = vec![raw.to_string()];
+    let lower = raw.to_lowercase();
+
+    if lower.contains(" dan ") {
+        if let Ok(re) = Regex::new(r"(?i)\s+dan\s+") {
+            vars.push(re.replace_all(raw, " & ").to_string());
+            vars.push(re.replace_all(raw, " and ").to_string());
+            vars.push(re.replace_all(raw, ", ").to_string());
+        }
+    }
+
+    if raw.contains(" & ") {
+        vars.push(raw.replace(" & ", " dan "));
+        vars.push(raw.replace(" & ", " and "));
+        vars.push(raw.replace(" & ", ", "));
+    }
+
+    if lower.contains(" and ") {
+        if let Ok(re) = Regex::new(r"(?i)\s+and\s+") {
+            vars.push(re.replace_all(raw, " & ").to_string());
+            vars.push(re.replace_all(raw, " dan ").to_string());
+            vars.push(re.replace_all(raw, ", ").to_string());
+        }
+    }
+
+    if raw.contains(", ") {
+        vars.push(raw.replace(", ", " & "));
+        vars.push(raw.replace(", ", " dan "));
+    }
+
+    let mut deduped = Vec::new();
+    for v in vars {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() && !deduped.contains(&trimmed) {
+            deduped.push(trimmed);
+        }
+    }
+    deduped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_artist_variations_dan() {
+        let vars = get_artist_variations("eńau dan Ari Lesmana");
+        assert_eq!(vars[0], "eńau dan Ari Lesmana");
+        assert!(vars.contains(&"eńau & Ari Lesmana".to_string()));
+        assert!(vars.contains(&"eńau and Ari Lesmana".to_string()));
+        assert!(vars.contains(&"eńau, Ari Lesmana".to_string()));
+    }
+
+    #[test]
+    fn test_get_artist_variations_ampersand() {
+        let vars = get_artist_variations("eńau & Ari Lesmana");
+        assert_eq!(vars[0], "eńau & Ari Lesmana");
+        assert!(vars.contains(&"eńau dan Ari Lesmana".to_string()));
+    }
+}

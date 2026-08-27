@@ -4,6 +4,13 @@ use crate::lrc_parser::LrcLine;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+#[derive(Clone, Debug, Default)]
+pub struct ProviderHit {
+    pub provider_name: String,
+    pub content: String,
+    pub plain: Option<String>,
+}
+
 pub struct AppState {
     pub media: MediaInfo,
     pub lyrics_lines: Vec<LrcLine>,
@@ -19,6 +26,8 @@ pub struct AppState {
     pub last_pos_ms: u64,
     pub last_pos_update: Instant,
     pub layout_cache_dirty: bool,
+    pub available_providers: Vec<ProviderHit>,
+    pub active_provider_index: usize,
 }
 
 pub static mut APP_STATE: Option<Arc<Mutex<AppState>>> = None;

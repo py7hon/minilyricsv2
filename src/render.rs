@@ -68,11 +68,19 @@ fn line_origin_x(
     width_f: f32,
     text_width: f32,
     _text: &str,
+    cfg: &StyleConfig,
 ) -> f32 {
-    match singer_index {
-        0 => 15.0,
-        2 => ((width_f - text_width) / 2.0).max(15.0),
-        _ => (width_f - 15.0 - text_width).max(15.0),
+    let align_mode = cfg.alignment.trim().to_lowercase();
+    match align_mode.as_str() {
+        "left" => 15.0,
+        "right" => (width_f - 15.0 - text_width).max(15.0),
+        "center" => ((width_f - text_width) / 2.0).max(15.0),
+        _ => match singer_index {
+            0 => 15.0,                                     // Solo Singer 1 -> Left Aligned
+            1 => (width_f - 15.0 - text_width).max(15.0),  // Singer 2 -> Right Aligned
+            2 => ((width_f - text_width) / 2.0).max(15.0), // Group / Unison -> CENTER ALIGNED
+            _ => 15.0,
+        },
     }
 }
 
@@ -524,10 +532,10 @@ pub unsafe fn render_window_d2d(
                         let is_active = offset == 0 || is_paired_bg_of_active;
 
                         let (mut active_karaoke_color, mut active_text_color) = if is_active {
-                            let k_col = if line.singer_index > 0 {
-                                hex_to_d2d_color(&cfg.karaoke_v2_hex, 1.0)
-                            } else {
-                                hex_to_d2d_color(&cfg.karaoke_hex, 1.0)
+                            let k_col = match line.singer_index {
+                                1 => hex_to_d2d_color(&cfg.karaoke_v2_hex, 1.0),
+                                2 => hex_to_d2d_color(&cfg.karaoke_group_hex, 1.0),
+                                _ => hex_to_d2d_color(&cfg.karaoke_hex, 1.0),
                             };
                             let t_col = hex_to_d2d_color(&cfg.active_hex, 1.0);
                             (k_col, t_col)
@@ -583,6 +591,7 @@ pub unsafe fn render_window_d2d(
                                     width_f,
                                     note_width,
                                     note_text,
+                                    cfg,
                                 );
 
                                 let (start_ms, dur_ms) = if is_in_instrumental_gap {
@@ -712,6 +721,7 @@ pub unsafe fn render_window_d2d(
                                         width_f,
                                         line_width,
                                         &text_to_draw,
+                                        cfg,
                                     );
 
                                     let draw_color = if is_active {
@@ -759,6 +769,7 @@ pub unsafe fn render_window_d2d(
                                                 width_f,
                                                 bg_w,
                                                 &bg_text,
+                                                cfg,
                                             );
                                             let mut bg_color = draw_color;
                                             bg_color.a = (bg_color.a * 0.75).min(0.75);
@@ -805,6 +816,7 @@ pub unsafe fn render_window_d2d(
                                                     width_f,
                                                     sub_width,
                                                     sub,
+                                                    cfg,
                                                 );
 
                                                 let sub_color =
@@ -1008,6 +1020,7 @@ pub unsafe fn render_window_d2d(
                                             width_f,
                                             vline.width,
                                             &vline.snippet,
+                                            cfg,
                                         );
 
                                         let mut current_x = line_origin;
@@ -1030,12 +1043,29 @@ pub unsafe fn render_window_d2d(
                                         }
                                         current_y += line_height;
                                     }
-
                                     let _total_box_height = (current_y - line_top).max(line_height);
                                     let active_idx = render_data
                                         .iter()
                                         .position(|r| r.progress < 1.0)
                                         .unwrap_or_else(|| render_data.len().saturating_sub(1));
+
+                                    let effect = cfg.karaoke_effect.trim().to_lowercase();
+                                    let is_sweep_style = matches!(
+                                        effect.as_str(),
+                                        "sweep" | "kf" | "glow" | "glow_sweep" | "bloom"
+                                    );
+
+                                    let (sung_color, unsung_color) = if is_sweep_style {
+                                        (
+                                            active_karaoke_color,
+                                            D2D1_COLOR_F {
+                                                a: active_text_color.a * 0.40,
+                                                ..active_text_color
+                                            },
+                                        )
+                                    } else {
+                                        (active_karaoke_color, active_text_color)
+                                    };
 
                                     for (i, rs) in render_data.iter().enumerate() {
                                         if i == active_idx {
@@ -1043,9 +1073,9 @@ pub unsafe fn render_window_d2d(
                                         }
 
                                         let syl_color = if rs.progress >= 1.0 {
-                                            active_karaoke_color
+                                            sung_color
                                         } else {
-                                            active_text_color
+                                            unsung_color
                                         };
                                         draw_text_with_shadow(
                                             target,
@@ -1309,138 +1339,76 @@ pub unsafe fn render_window_d2d(
                                                     cfg,
                                                 );
                                             }
-                                            "sweep" | "kf" => {
+                                            "sweep" | "kf" | "glow" | "glow_sweep" | "bloom" => {
+                                                let base_color = D2D1_COLOR_F {
+                                                    a: active_text_color.a * 0.40,
+                                                    ..active_text_color
+                                                };
                                                 draw_text_with_shadow(
                                                     target,
                                                     &reusable_brush,
                                                     &rs.layout,
                                                     rs.x,
                                                     rs.y,
-                                                    &active_text_color,
+                                                    &base_color,
                                                     cfg,
                                                 );
                                                 let fill_w = rs.width * rs.progress;
                                                 if fill_w > 0.0 {
-                                                    let clip_rect = D2D_RECT_F {
-                                                        left: rs.x,
-                                                        top: rs.y - 2.0,
-                                                        right: rs.x + fill_w,
-                                                        bottom: rs.y + line_height + 2.0,
+                                                    let edge_x = rs.x + fill_w;
+                                                    let sung_fill = active_karaoke_color;
+
+                                                    // Main solid sung fill up to edge_x - 3.0
+                                                    let clip_solid = D2D_RECT_F {
+                                                        left: rs.x - 2.0,
+                                                        top: rs.y - 4.0,
+                                                        right: (edge_x - 3.0).max(rs.x - 2.0),
+                                                        bottom: rs.y + line_height + 4.0,
                                                     };
                                                     target.PushAxisAlignedClip(
-                                                        &clip_rect,
+                                                        &clip_solid,
                                                         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                                     );
-                                                    reusable_brush.SetColor(&active_karaoke_color);
-                                                    target.DrawTextLayout(
-                                                        D2D_POINT_2F { x: rs.x, y: rs.y },
-                                                        &rs.layout,
-                                                        &reusable_brush,
-                                                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                                    );
-                                                    target.PopAxisAlignedClip();
-                                                }
-                                            }
-                                            "pulse" => {
-                                                // Smooth scale-up-then-down breathing pulse,
-                                                // centered on the syllable box, no vertical
-                                                // shift (distinct from "pop"'s lift+shrink).
-                                                let pulse =
-                                                    (rs.progress * std::f32::consts::PI).sin();
-                                                let scale_val = 1.0 + (pulse * 0.15);
-                                                let blended = lerp_d2d_color(
-                                                    &active_text_color,
-                                                    &active_karaoke_color,
-                                                    rs.progress,
-                                                );
-
-                                                let cx = rs.x + (rs.width / 2.0);
-                                                let cy = rs.y + (line_height / 2.0);
-
-                                                if cfg.shadow_enabled {
                                                     draw_text_with_shadow(
                                                         target,
                                                         &reusable_brush,
                                                         &rs.layout,
                                                         rs.x,
                                                         rs.y,
-                                                        &blended,
+                                                        &sung_fill,
                                                         cfg,
                                                     );
+                                                    target.PopAxisAlignedClip();
+
+                                                    // Smooth feathered alpha transition band across [edge_x - 3.0, edge_x + 3.0]
+                                                    let clip_feather = D2D_RECT_F {
+                                                        left: (edge_x - 3.0).max(rs.x - 2.0),
+                                                        top: rs.y - 4.0,
+                                                        right: (edge_x + 3.0)
+                                                            .min(rs.x + rs.width + 2.0),
+                                                        bottom: rs.y + line_height + 4.0,
+                                                    };
+                                                    target.PushAxisAlignedClip(
+                                                        &clip_feather,
+                                                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                                                    );
+                                                    let feather_sung = D2D1_COLOR_F {
+                                                        a: sung_fill.a * 0.70,
+                                                        ..sung_fill
+                                                    };
+                                                    draw_text_with_shadow(
+                                                        target,
+                                                        &reusable_brush,
+                                                        &rs.layout,
+                                                        rs.x,
+                                                        rs.y,
+                                                        &feather_sung,
+                                                        cfg,
+                                                    );
+                                                    target.PopAxisAlignedClip();
                                                 }
-
-                                                let transform = Matrix3x2 {
-                                                    M11: scale_val,
-                                                    M12: 0.0,
-                                                    M21: 0.0,
-                                                    M22: scale_val,
-                                                    M31: cx * (1.0 - scale_val),
-                                                    M32: cy * (1.0 - scale_val),
-                                                };
-
-                                                target.SetTransform(&transform);
-                                                reusable_brush.SetColor(&blended);
-
-                                                target.DrawTextLayout(
-                                                    D2D_POINT_2F { x: rs.x, y: rs.y },
-                                                    &rs.layout,
-                                                    &reusable_brush,
-                                                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                                                );
-
-                                                let identity = Matrix3x2 {
-                                                    M11: 1.0,
-                                                    M12: 0.0,
-                                                    M21: 0.0,
-                                                    M22: 1.0,
-                                                    M31: 0.0,
-                                                    M32: 0.0,
-                                                };
-                                                target.SetTransform(&identity);
                                             }
-                                            "shake" => {
-                                                // Horizontal jitter that decays as the
-                                                // syllable's progress advances toward 1.0,
-                                                // settling once it's fully highlighted.
-                                                let jitter = (rs.progress * 40.0).sin()
-                                                    * (1.0 - rs.progress)
-                                                    * 2.0;
-                                                let blended = lerp_d2d_color(
-                                                    &active_text_color,
-                                                    &active_karaoke_color,
-                                                    rs.progress,
-                                                );
-                                                draw_text_with_shadow(
-                                                    target,
-                                                    &reusable_brush,
-                                                    &rs.layout,
-                                                    rs.x + jitter,
-                                                    rs.y,
-                                                    &blended,
-                                                    cfg,
-                                                );
-                                            }
-                                            "rise" => {
-                                                // Syllable slides up into place from a few
-                                                // pixels below while crossfading to the
-                                                // karaoke color, settling at progress = 1.0.
-                                                let rise_amount = (1.0 - rs.progress).powi(2) * 8.0;
-                                                let blended = lerp_d2d_color(
-                                                    &active_text_color,
-                                                    &active_karaoke_color,
-                                                    rs.progress,
-                                                );
-                                                draw_text_with_shadow(
-                                                    target,
-                                                    &reusable_brush,
-                                                    &rs.layout,
-                                                    rs.x,
-                                                    rs.y + rise_amount,
-                                                    &blended,
-                                                    cfg,
-                                                );
-                                            }
-                                            "glow" => {
+                                            "word_glow" => {
                                                 let glow_color = D2D1_COLOR_F {
                                                     a: 0.35,
                                                     ..active_karaoke_color
@@ -1860,6 +1828,7 @@ pub unsafe fn render_window_d2d(
                                                 width_f,
                                                 vline.width,
                                                 &vline.snippet,
+                                                cfg,
                                             );
                                             let mut bx = bg_origin;
                                             for ps in &vline.items {
@@ -1927,6 +1896,7 @@ pub unsafe fn render_window_d2d(
                                                     width_f,
                                                     sub_width,
                                                     &formatted_sub,
+                                                    cfg,
                                                 );
 
                                                 // Draw subtle rounded pill container matching Image 1
@@ -2084,6 +2054,7 @@ pub unsafe fn render_window_d2d(
                                 width_f,
                                 side_width,
                                 &line.text,
+                                cfg,
                             );
 
                             let distance = (target_idx as f32 - float_idx).abs();

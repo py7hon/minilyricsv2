@@ -9,8 +9,8 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetWindowLongPtrW, LoadIconW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, TrackPopupMenu, GWL_EXSTYLE,
-    IDI_INFORMATION, MF_SEPARATOR, MF_STRING, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WS_EX_TRANSPARENT,
+    IDI_INFORMATION, MF_POPUP, MF_SEPARATOR, MF_STRING, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WS_EX_TRANSPARENT,
 };
 pub const WM_TRAYICON: u32 = 0x0400 + 1;
 pub const ID_TRAY_ICON: u32 = 1001;
@@ -25,6 +25,7 @@ pub const ID_MENU_TRIM_MEMORY: u32 = 2009;
 pub const ID_MENU_SETTINGS: u32 = 2010;
 pub const ID_MENU_CHECK_UPDATE: u32 = 2011;
 pub const ID_MENU_EXIT: u32 = 2002;
+pub const ID_MENU_PROVIDER_BASE: u32 = 3000;
 
 pub fn add_tray_icon(hwnd: HWND) {
     unsafe {
@@ -87,21 +88,48 @@ pub fn show_tray_menu(hwnd: HWND) {
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
         let hmenu = CreatePopupMenu().unwrap();
-        let (lock_text, current_offset) = if let Some(state_arc) = APP_STATE.as_ref() {
-            if let Ok(s) = state_arc.lock() {
-                let l = if s.is_locked {
-                    "Unlock Position (Draggable)\0"
+        let (lock_text, current_offset, providers_info) =
+            if let Some(state_arc) = APP_STATE.as_ref() {
+                if let Ok(s) = state_arc.lock() {
+                    let l = if s.is_locked {
+                        "Unlock Position (Draggable)\0"
+                    } else {
+                        "Lock Position (Click-Through)\0"
+                    };
+                    let list = s
+                        .available_providers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, hit)| (hit.provider_name.clone(), i == s.active_provider_index))
+                        .collect::<Vec<_>>();
+                    (l, s.offset_ms, list)
                 } else {
-                    "Lock Position (Click-Through)\0"
-                };
-                (l, s.offset_ms)
+                    ("Toggle Lock\0", 0, Vec::new())
+                }
             } else {
-                ("Toggle Lock\0", 0)
-            }
+                ("Toggle Lock\0", 0, Vec::new())
+            };
+
+        // Create Lyrics Source Submenu
+        let h_sub_provider = CreatePopupMenu().unwrap();
+        if providers_info.is_empty() {
+            let empty_w: Vec<u16> = "No providers available\0".encode_utf16().collect();
+            let _ = AppendMenuW(h_sub_provider, MF_STRING, 0, PCWSTR(empty_w.as_ptr()));
         } else {
-            ("Toggle Lock\0", 0)
-        };
+            for (i, (prov_name, is_active)) in providers_info.iter().enumerate() {
+                let mark = if *is_active { "✓ " } else { "   " };
+                let label_w: Vec<u16> = format!("{}{}\0", mark, prov_name).encode_utf16().collect();
+                let _ = AppendMenuW(
+                    h_sub_provider,
+                    MF_STRING,
+                    (ID_MENU_PROVIDER_BASE + i as u32) as usize,
+                    PCWSTR(label_w.as_ptr()),
+                );
+            }
+        }
+
         let lock_w: Vec<u16> = lock_text.encode_utf16().collect();
+        let source_w: Vec<u16> = "Lyrics Source\0".encode_utf16().collect();
         let small_w: Vec<u16> = "Size: Compact (480x160)\0".encode_utf16().collect();
         let med_w: Vec<u16> = "Size: Normal (560x200)\0".encode_utf16().collect();
         let large_w: Vec<u16> = "Size: Large (680x240)\0".encode_utf16().collect();
@@ -116,6 +144,13 @@ pub fn show_tray_menu(hwnd: HWND) {
         let settings_w: Vec<u16> = "Settings...\0".encode_utf16().collect();
         let update_w: Vec<u16> = "Check for Updates...\0".encode_utf16().collect();
         let exit_w: Vec<u16> = "Exit Mini Lyric\0".encode_utf16().collect();
+
+        let _ = AppendMenuW(
+            hmenu,
+            MF_POPUP,
+            h_sub_provider.0 as usize,
+            PCWSTR(source_w.as_ptr()),
+        );
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,

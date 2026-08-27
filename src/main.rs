@@ -31,8 +31,10 @@ async fn main() {
     let media_handle = spawn_media_monitor();
     let lyrics_client = LyricsClient::new();
 
-    // Check for updates in the background on startup
-    check_for_updates_async(false);
+    // Check for updates in the background on startup if auto_check_updates is enabled
+    if config.auto_check_updates {
+        check_for_updates_async(false);
+    }
 
     let app_state = Arc::new(Mutex::new(AppState {
         media: Default::default(),
@@ -49,6 +51,8 @@ async fn main() {
         last_pos_ms: 0,
         last_pos_update: Instant::now(),
         layout_cache_dirty: false,
+        available_providers: Vec::new(),
+        active_provider_index: 0,
     }));
 
     unsafe {
@@ -73,6 +77,7 @@ async fn main() {
         let mut current_artist = String::new();
         let mut current_album = String::new();
         let mut last_trim_time = Instant::now();
+        let mut last_update_check_time = Instant::now();
         let mut last_playing = false;
         let mut ticker = tokio::time::interval(Duration::from_millis(50));
 
@@ -85,11 +90,20 @@ async fn main() {
                 continue;
             };
 
-            let (auto_trim, trim_interval) = if let Ok(s) = state_clone.lock() {
-                (s.config.auto_trim_memory, s.config.trim_interval_secs)
+            let (auto_trim, trim_interval, auto_update) = if let Ok(s) = state_clone.lock() {
+                (
+                    s.config.auto_trim_memory,
+                    s.config.trim_interval_secs,
+                    s.config.auto_check_updates,
+                )
             } else {
-                (true, 60)
+                (true, 60, true)
             };
+
+            if auto_update && last_update_check_time.elapsed() >= Duration::from_secs(6 * 3600) {
+                last_update_check_time = Instant::now();
+                check_for_updates_async(false);
+            }
 
             if trim_interval > 0 && last_trim_time.elapsed() >= Duration::from_secs(trim_interval) {
                 if auto_trim {
@@ -145,13 +159,20 @@ async fn main() {
                     fetch_album = media.album.clone();
                     fetch_dur = media.duration_ms;
                 } else {
-                    let active_playing = media.is_playing || !media.title.is_empty();
-                    if media.position_ms > 0 {
-                        s.media.position_ms = media.position_ms;
-                    }
-                    s.media.is_playing = active_playing;
+                    s.media.is_playing = media.is_playing;
 
-                    let real_pos = s.media.position_ms;
+                    if media.position_ms > 0 && media.position_ms != s.last_pos_ms {
+                        s.last_pos_ms = media.position_ms;
+                        s.last_pos_update = Instant::now();
+                    }
+
+                    let real_pos = if media.is_playing && s.last_pos_ms > 0 {
+                        s.last_pos_ms + s.last_pos_update.elapsed().as_millis() as u64
+                    } else {
+                        s.last_pos_ms
+                    };
+                    s.media.position_ms = real_pos;
+
                     let adjusted_ms = (real_pos as i64 + s.offset_ms).max(0) as u64;
 
                     let new_index = if s.lyrics_lines.is_empty() {
@@ -176,7 +197,7 @@ async fn main() {
                     .await;
 
                 match result {
-                    Ok((ttml_raw, plain_opt, provider)) => {
+                    Ok((ttml_raw, plain_opt, provider, available_hits)) => {
                         let karaoke_mode = if let Ok(s) = state_clone.lock() {
                             s.config.karaoke_mode.trim().to_lowercase()
                         } else {
@@ -230,7 +251,9 @@ async fn main() {
                             s.is_loading = false;
                             s.lyrics_lines = parsed_lines.clone();
                             s.plain_lyrics = plain_opt;
-                            s.provider_name = Some(provider);
+                            s.provider_name = Some(provider.clone());
+                            s.available_providers = available_hits;
+                            s.active_provider_index = 0;
                             s.layout_cache_dirty = true;
                         }
 

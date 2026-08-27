@@ -81,75 +81,66 @@ pub fn unescape_xml_entities(input: &str) -> String {
 }
 
 fn detect_singer_index(p_open_tag: &str, div_open_tag: &str, text: &str, p_block: &str) -> u8 {
-    let combined = format!("{} {}", p_open_tag, div_open_tag).to_lowercase();
-    let p_block_lower = p_block.to_lowercase();
     let text_lower = text.to_lowercase();
 
-    // Check unison (singer_index = 2):
-    let contains_v0 = combined.contains("agent=\"v0\"")
-        || combined.contains("agent='v0'")
-        || p_block_lower.contains("agent=\"v0\"")
-        || p_block_lower.contains("agent='v0'")
-        || combined.contains("ttm:agent=\"v0\"")
-        || p_block_lower.contains("ttm:agent=\"v0\"")
-        || combined.contains("singer=\"0\"")
-        || combined.contains("singer='0'");
+    // Look for agent="...", ttm:agent="..." in p_open_tag, div_open_tag, and p_block
+    let agent_str = extract_xml_attr(p_open_tag, "ttm:agent")
+        .or_else(|| extract_xml_attr(p_open_tag, "agent"))
+        .or_else(|| extract_xml_attr(div_open_tag, "ttm:agent"))
+        .or_else(|| extract_xml_attr(div_open_tag, "agent"))
+        .or_else(|| extract_xml_attr(p_block, "ttm:agent"))
+        .or_else(|| extract_xml_attr(p_block, "agent"))
+        .unwrap_or_default()
+        .to_lowercase();
 
-    let contains_unison_kw = combined.contains("unison")
-        || combined.contains("together")
-        || text_lower.contains("both:")
-        || text_lower.contains("together:")
-        || text_lower.contains("unison:")
+    let singer_str = extract_xml_attr(p_open_tag, "singer")
+        .or_else(|| extract_xml_attr(div_open_tag, "singer"))
+        .or_else(|| extract_xml_attr(p_block, "singer"))
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // 1. Check Group / Unison / Both singers together (singer_index = 2 -> Center Aligned):
+    let is_group_agent = agent_str.contains("v0")
+        || agent_str.contains("v10")
+        || agent_str.contains("v1000")
+        || agent_str.contains("1000")
+        || agent_str.contains("group")
+        || agent_str.contains("all")
+        || agent_str.contains("chorus")
+        || agent_str.contains("choir")
+        || agent_str.contains("both")
+        || (agent_str.contains("v1") && agent_str.contains("v2"))
+        || singer_str == "0"
+        || singer_str.contains("v10")
+        || singer_str.contains("1000")
+        || singer_str.contains("group")
+        || singer_str.contains("both");
+
+    let contains_unison_kw = text_lower.starts_with("both:")
+        || text_lower.starts_with("together:")
+        || text_lower.starts_with("unison:")
+        || text_lower.starts_with("group:")
         || text_lower.contains("[both]")
         || text_lower.contains("(both)")
         || text_lower.contains("[together]")
-        || text_lower.contains("(together)");
+        || text_lower.contains("(together)")
+        || text_lower.contains("[group]")
+        || text_lower.contains("(group)");
 
-    let has_v1 = combined.contains("agent=\"v1\"")
-        || combined.contains("agent='v1'")
-        || p_block_lower.contains("agent=\"v1\"")
-        || p_block_lower.contains("agent='v1'")
-        || combined.contains("ttm:agent=\"v1\"")
-        || p_block_lower.contains("ttm:agent=\"v1\"")
-        || combined.contains("singer=\"1\"")
-        || combined.contains("singer='1'");
-
-    let has_v2 = combined.contains("agent=\"v2\"")
-        || combined.contains("agent='v2'")
-        || combined.contains("agent=\"v3\"")
-        || combined.contains("agent='v3'")
-        || p_block_lower.contains("agent=\"v2\"")
-        || p_block_lower.contains("agent='v2'")
-        || p_block_lower.contains("agent=\"v3\"")
-        || p_block_lower.contains("agent='v3'")
-        || combined.contains("ttm:agent=\"v2\"")
-        || p_block_lower.contains("ttm:agent=\"v2\"")
-        || combined.contains("singer=\"2\"")
-        || combined.contains("singer='2'");
-
-    if contains_v0 || contains_unison_kw || (has_v1 && has_v2) {
+    if is_group_agent || contains_unison_kw {
         return 2;
     }
 
-    // Check secondary / duet singer (singer_index = 1):
-    let is_secondary = combined.contains("agent=\"v2\"")
-        || combined.contains("agent='v2'")
-        || combined.contains("agent=\"v3\"")
-        || combined.contains("agent='v3'")
-        || p_block_lower.contains("agent=\"v2\"")
-        || p_block_lower.contains("agent='v2'")
-        || p_block_lower.contains("agent=\"v3\"")
-        || p_block_lower.contains("agent='v3'")
-        || combined.contains("ttm:agent=\"v2\"")
-        || p_block_lower.contains("ttm:agent=\"v2\"")
-        || combined.contains("role=\"secondary\"")
-        || combined.contains("role='secondary'")
-        || combined.contains("role=\"duet\"")
-        || combined.contains("role='duet'")
-        || combined.contains("singer=\"2\"")
-        || combined.contains("singer='2'");
+    // 2. Check secondary singer (singer_index = 1 -> Right Aligned):
+    let is_secondary_agent = agent_str.contains("v2")
+        || agent_str.contains("v3")
+        || singer_str == "2"
+        || singer_str == "3"
+        || p_open_tag.contains("role=\"secondary\"")
+        || div_open_tag.contains("role=\"secondary\"")
+        || p_block.contains("role=\"secondary\"");
 
-    if is_secondary {
+    if is_secondary_agent {
         return 1;
     }
 
@@ -1762,5 +1753,13 @@ mod tests {
         let lines2 = parse_lrc(ttml_duet);
         assert_eq!(lines2.len(), 1);
         assert_eq!(lines2[0].singer_index, 1); // Duet singer!
+    }
+
+    #[test]
+    fn test_ttml_group_agent_center_alignment() {
+        let ttml_group = r#"<tt xmlns:ttm="http://www.w3.org/ns/ttml#metadata"><body><div><p begin="00:00:10.00" ttm:agent="Group">Chorus together line</p></div></body></tt>"#;
+        let lines = parse_lrc(ttml_group);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].singer_index, 2); // Group / Unison -> Center Aligned!
     }
 }

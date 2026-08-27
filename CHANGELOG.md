@@ -1,3 +1,28 @@
+# Release Notes - v0.1.13 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **⭐ Word-by-Word Priority Race**:
+  - Upgraded the multi-provider search engine (`src/lyrics_api.rs`) to enforce a strict **Word-by-Word Karaoke Priority Race**.
+  - Any **Word-by-Word / Syllable Karaoke hit** (Apple Music TTML, Musixmatch word timestamps, KPOE arrays, `<00:12.34>` syllable tags) **ALWAYS wins over plain line-by-line LRC**, regardless of network response speed.
+- **🥇 LyricsPlus #1 Top Rank**:
+  - Promoted **LyricsPlus** (`lyricsplus.prjktla.my.id`) to Priority Index 0 (highest precedence), ensuring native Apple Music TTML with multi-agent duet and group metadata is prioritized above all fallbacks.
+- **🎤 Group / Unison Singer Alignment & Color Customization**:
+  - Added Unison/Group singer center alignment for multi-vocal chorus lines.
+  - Added `karaoke_group_hex` setting to `config.toml`, Settings window, and Direct2D renderer for custom group chorus highlight styling (`#89b4fa`).
+- **🎨 Live Theme Preset Selector & Real-Time On-The-Fly Repaint**:
+  - Added 10 curated theme presets: **Catppuccin Mocha**, **Catppuccin Macchiato**, **Cute Kawaii**, **Tokyo Night**, **Dracula**, **Nord**, **Rosé Pine**, **Cyberpunk**, **Gruvbox**, and **Custom**.
+  - Changing themes in the Settings window instantly repaints the main desktop window live on the fly without needing an app restart.
+- **📱 Interactive "Lyrics Source" System Tray Selector**:
+  - Added a **"Lyrics Source ➔"** popup submenu in the right-click System Tray menu.
+  - Displays all available providers that found lyrics for the active song (e.g. `✓ LyricsPlus (TTML)`, `BetterLyrics (TTML)`, `LRCMux`).
+  - Clicking any provider instantly switches the active lyrics and timing on the fly.
+- **🔄 Automatic & Background Update Engine**:
+  - Enabled automatic background update checks on startup and added a periodic background timer (every 6 hours).
+  - Added an **"Auto Check Updates"** checkbox toggle in Settings.
+
+---
+
 # Release Notes - v0.1.12 📜✨
 
 ## 🌟 Highlights & Major Improvements

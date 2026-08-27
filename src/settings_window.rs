@@ -1,6 +1,7 @@
 #![allow(static_mut_refs)]
 use crate::app_state::APP_STATE;
-use crate::config::save_config;
+use crate::config::{get_theme_preset, save_config, THEME_PRESETS};
+use crate::window::redraw_main_window;
 use std::sync::Once;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -13,12 +14,16 @@ const IDC_SAVE: usize = 300;
 const IDC_CANCEL: usize = 301;
 const IDC_COLOR_ACTIVE_BTN: usize = 302;
 const IDC_COLOR_KARAOKE_BTN: usize = 303;
+const IDC_COLOR_KARAOKE_V2_BTN: usize = 304;
+const IDC_COLOR_KARAOKE_GROUP_BTN: usize = 305;
+const IDC_COMBO_THEME: usize = 306;
 
 static mut SETTINGS_HWND: Option<HWND> = None;
-static mut H_EDITS: [HWND; 9] = [HWND(0 as _); 9];
+static mut H_EDITS: [HWND; 11] = [HWND(0 as _); 11];
+static mut H_COMBO_THEME: HWND = HWND(0 as _);
 static mut H_COMBO_MODE: HWND = HWND(0 as _);
 static mut H_COMBO_EFFECT: HWND = HWND(0 as _);
-static mut H_CHECKS: [HWND; 3] = [HWND(0 as _); 3];
+static mut H_CHECKS: [HWND; 4] = [HWND(0 as _); 4];
 static REGISTER_ONCE: Once = Once::new();
 
 const BST_UNCHECKED: isize = 0;
@@ -130,7 +135,35 @@ unsafe extern "system" fn settings_wnd_proc(
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as usize;
             let notif = ((wparam.0 >> 16) & 0xFFFF) as u32;
-            if notif == BN_CLICKED as u32 {
+            if notif == CBN_SELCHANGE as u32 && id == IDC_COMBO_THEME {
+                let theme_label = get_combo_text(H_COMBO_THEME);
+                if let Some(preset) = get_theme_preset(&theme_label) {
+                    let _ = SetWindowTextW(H_EDITS[7], PCWSTR(to_wide(preset.active_hex).as_ptr()));
+                    let _ =
+                        SetWindowTextW(H_EDITS[8], PCWSTR(to_wide(preset.karaoke_hex).as_ptr()));
+                    let _ =
+                        SetWindowTextW(H_EDITS[9], PCWSTR(to_wide(preset.karaoke_v2_hex).as_ptr()));
+                    let _ = SetWindowTextW(
+                        H_EDITS[10],
+                        PCWSTR(to_wide(preset.karaoke_group_hex).as_ptr()),
+                    );
+
+                    if let Some(state_arc) = APP_STATE.as_ref() {
+                        if let Ok(mut s) = state_arc.lock() {
+                            s.config.theme = Some(preset.name.to_string());
+                            s.config.active_hex = preset.active_hex.to_string();
+                            s.config.karaoke_hex = preset.karaoke_hex.to_string();
+                            s.config.karaoke_v2_hex = preset.karaoke_v2_hex.to_string();
+                            s.config.karaoke_group_hex = preset.karaoke_group_hex.to_string();
+                            s.config.side_hex = preset.side_hex.to_string();
+                            s.config.sub_hex = preset.sub_hex.to_string();
+                            s.config.card_bg_hex = Some(preset.card_bg_hex.to_string());
+                            s.layout_cache_dirty = true;
+                        }
+                    }
+                    redraw_main_window();
+                }
+            } else if notif == BN_CLICKED as u32 {
                 match id {
                     IDC_SAVE => {
                         if save_values() {
@@ -150,12 +183,40 @@ unsafe extern "system" fn settings_wnd_proc(
                         let cur = get_text(H_EDITS[7]);
                         if let Some(new_hex) = pick_color(hwnd, &cur) {
                             let _ = SetWindowTextW(H_EDITS[7], PCWSTR(to_wide(&new_hex).as_ptr()));
+                            set_combo_by_text(H_COMBO_THEME, "Custom");
+                            if save_values_silent() {
+                                redraw_main_window();
+                            }
                         }
                     }
                     IDC_COLOR_KARAOKE_BTN => {
                         let cur = get_text(H_EDITS[8]);
                         if let Some(new_hex) = pick_color(hwnd, &cur) {
                             let _ = SetWindowTextW(H_EDITS[8], PCWSTR(to_wide(&new_hex).as_ptr()));
+                            set_combo_by_text(H_COMBO_THEME, "Custom");
+                            if save_values_silent() {
+                                redraw_main_window();
+                            }
+                        }
+                    }
+                    IDC_COLOR_KARAOKE_V2_BTN => {
+                        let cur = get_text(H_EDITS[9]);
+                        if let Some(new_hex) = pick_color(hwnd, &cur) {
+                            let _ = SetWindowTextW(H_EDITS[9], PCWSTR(to_wide(&new_hex).as_ptr()));
+                            set_combo_by_text(H_COMBO_THEME, "Custom");
+                            if save_values_silent() {
+                                redraw_main_window();
+                            }
+                        }
+                    }
+                    IDC_COLOR_KARAOKE_GROUP_BTN => {
+                        let cur = get_text(H_EDITS[10]);
+                        if let Some(new_hex) = pick_color(hwnd, &cur) {
+                            let _ = SetWindowTextW(H_EDITS[10], PCWSTR(to_wide(&new_hex).as_ptr()));
+                            set_combo_by_text(H_COMBO_THEME, "Custom");
+                            if save_values_silent() {
+                                redraw_main_window();
+                            }
                         }
                     }
                     _ => {}
@@ -183,8 +244,10 @@ unsafe fn create_controls(parent: HWND) {
         ("Font Side Size:", 15, 125),
         ("Font Title Size:", 15, 180),
         ("Opacity:", 15, 235),
-        ("Active Hex:", 15, 290),
-        ("Karaoke Hex:", 15, 345),
+        ("Active Text Hex:", 15, 290),
+        ("Karaoke Singer 1 Hex:", 15, 345),
+        ("Karaoke Singer 2 Hex:", 15, 400),
+        ("Group / Unison Hex:", 15, 455),
     ];
     for (i, (text, x, y)) in labels.iter().enumerate() {
         let _ = CreateWindowExW(
@@ -225,9 +288,11 @@ unsafe fn create_controls(parent: HWND) {
             4 => 6,
             5 => 7,
             6 => 8,
+            7 => 9,
+            8 => 10,
             _ => 0,
         };
-        if i < 7 {
+        if i < 9 {
             H_EDITS[map_idx] = hed;
         }
     }
@@ -259,6 +324,74 @@ unsafe fn create_controls(parent: HWND) {
         hinst,
         None,
     );
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        w!("BUTTON"),
+        w!("Pick..."),
+        WS_CHILD | WS_VISIBLE,
+        160,
+        418,
+        60,
+        24,
+        parent,
+        HMENU(IDC_COLOR_KARAOKE_V2_BTN as _),
+        hinst,
+        None,
+    );
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        w!("BUTTON"),
+        w!("Pick..."),
+        WS_CHILD | WS_VISIBLE,
+        160,
+        473,
+        60,
+        24,
+        parent,
+        HMENU(IDC_COLOR_KARAOKE_GROUP_BTN as _),
+        hinst,
+        None,
+    );
+
+    // Theme Preset Dropdown
+    let _ = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        w!("STATIC"),
+        w!("Theme Preset:"),
+        WS_CHILD | WS_VISIBLE,
+        250,
+        15,
+        200,
+        16,
+        parent,
+        HMENU(0 as _),
+        hinst,
+        None,
+    );
+    H_COMBO_THEME = CreateWindowExW(
+        WINDOW_EX_STYLE::default(),
+        w!("COMBOBOX"),
+        w!(""),
+        WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
+        250,
+        33,
+        200,
+        200,
+        parent,
+        HMENU(IDC_COMBO_THEME as _),
+        hinst,
+        None,
+    )
+    .unwrap_or(HWND(0 as _));
+    for preset in THEME_PRESETS {
+        let w = to_wide(preset.label);
+        SendMessageW(
+            H_COMBO_THEME,
+            CB_ADDSTRING,
+            WPARAM(0),
+            LPARAM(w.as_ptr() as isize),
+        );
+    }
 
     let _ = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
@@ -266,7 +399,7 @@ unsafe fn create_controls(parent: HWND) {
         w!("Karaoke Mode:"),
         WS_CHILD | WS_VISIBLE,
         250,
-        15,
+        70,
         200,
         16,
         parent,
@@ -280,7 +413,7 @@ unsafe fn create_controls(parent: HWND) {
         w!(""),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
         250,
-        33,
+        88,
         200,
         120,
         parent,
@@ -305,7 +438,7 @@ unsafe fn create_controls(parent: HWND) {
         w!("Karaoke Effect:"),
         WS_CHILD | WS_VISIBLE,
         250,
-        70,
+        125,
         200,
         16,
         parent,
@@ -319,7 +452,7 @@ unsafe fn create_controls(parent: HWND) {
         w!(""),
         WS_CHILD | WS_VISIBLE | WINDOW_STYLE(CBS_DROPDOWNLIST as u32),
         250,
-        88,
+        143,
         200,
         300,
         parent,
@@ -339,9 +472,10 @@ unsafe fn create_controls(parent: HWND) {
     }
 
     let checks = [
-        ("Show Card Background", 250, 135),
-        ("Enable Shadow", 250, 160),
-        ("Auto Trim Memory", 250, 185),
+        ("Show Card Background", 250, 185),
+        ("Enable Shadow", 250, 210),
+        ("Auto Trim Memory", 250, 235),
+        ("Auto Check Updates", 250, 260),
     ];
     for (i, (txt, x, y)) in checks.iter().enumerate() {
         let h = CreateWindowExW(
@@ -461,6 +595,14 @@ unsafe fn load_values() {
     let _ = SetWindowTextW(H_EDITS[6], PCWSTR(to_wide(&c.opacity.to_string()).as_ptr()));
     let _ = SetWindowTextW(H_EDITS[7], PCWSTR(to_wide(&c.active_hex).as_ptr()));
     let _ = SetWindowTextW(H_EDITS[8], PCWSTR(to_wide(&c.karaoke_hex).as_ptr()));
+    let _ = SetWindowTextW(H_EDITS[9], PCWSTR(to_wide(&c.karaoke_v2_hex).as_ptr()));
+    let _ = SetWindowTextW(H_EDITS[10], PCWSTR(to_wide(&c.karaoke_group_hex).as_ptr()));
+    let theme_name = c.theme.as_deref().unwrap_or("catppuccin_mocha");
+    if let Some(preset) = get_theme_preset(theme_name) {
+        set_combo_by_text(H_COMBO_THEME, preset.label);
+    } else {
+        set_combo_by_text(H_COMBO_THEME, "Custom");
+    }
     set_combo_by_text(H_COMBO_MODE, &c.karaoke_mode);
     set_combo_by_text(H_COMBO_EFFECT, &c.karaoke_effect);
     if !H_CHECKS[0].0.is_null() {
@@ -472,7 +614,53 @@ unsafe fn load_values() {
     if !H_CHECKS[2].0.is_null() {
         set_check(H_CHECKS[2], c.auto_trim_memory);
     }
+    if !H_CHECKS[3].0.is_null() {
+        set_check(H_CHECKS[3], c.auto_check_updates);
+    }
 }
+unsafe fn save_values_silent() -> bool {
+    let Some(state_arc) = APP_STATE.as_ref() else {
+        return false;
+    };
+    let Ok(mut s) = state_arc.lock() else {
+        return false;
+    };
+    let active_hex = get_text(H_EDITS[7]);
+    let karaoke_hex = get_text(H_EDITS[8]);
+    let karaoke_v2_hex = get_text(H_EDITS[9]);
+    let karaoke_group_hex = get_text(H_EDITS[10]);
+    let theme_label = get_combo_text(H_COMBO_THEME);
+    if let Some(preset) = get_theme_preset(&theme_label) {
+        s.config.theme = Some(preset.name.to_string());
+        if preset.name != "custom" {
+            s.config.active_hex = preset.active_hex.to_string();
+            s.config.karaoke_hex = preset.karaoke_hex.to_string();
+            s.config.karaoke_v2_hex = preset.karaoke_v2_hex.to_string();
+            s.config.karaoke_group_hex = preset.karaoke_group_hex.to_string();
+            s.config.side_hex = preset.side_hex.to_string();
+            s.config.sub_hex = preset.sub_hex.to_string();
+            s.config.card_bg_hex = Some(preset.card_bg_hex.to_string());
+        }
+    } else {
+        s.config.theme = Some("custom".to_string());
+    }
+    if !active_hex.is_empty() {
+        s.config.active_hex = active_hex.trim_start_matches('#').to_string();
+    }
+    if !karaoke_hex.is_empty() {
+        s.config.karaoke_hex = karaoke_hex.trim_start_matches('#').to_string();
+    }
+    if !karaoke_v2_hex.is_empty() {
+        s.config.karaoke_v2_hex = karaoke_v2_hex.trim_start_matches('#').to_string();
+    }
+    if !karaoke_group_hex.is_empty() {
+        s.config.karaoke_group_hex = karaoke_group_hex.trim_start_matches('#').to_string();
+    }
+    s.layout_cache_dirty = true;
+    save_config(&s.config);
+    true
+}
+
 unsafe fn save_values() -> bool {
     let Some(state_arc) = APP_STATE.as_ref() else {
         return false;
@@ -496,6 +684,9 @@ unsafe fn save_values() -> bool {
         .clamp(0.1, 1.0);
     let active_hex = get_text(H_EDITS[7]);
     let karaoke_hex = get_text(H_EDITS[8]);
+    let karaoke_v2_hex = get_text(H_EDITS[9]);
+    let karaoke_group_hex = get_text(H_EDITS[10]);
+    let theme_label = get_combo_text(H_COMBO_THEME);
     let mode = get_combo_text(H_COMBO_MODE);
     let effect = get_combo_text(H_COMBO_EFFECT);
     if !font_family.is_empty() {
@@ -504,6 +695,20 @@ unsafe fn save_values() -> bool {
     s.config.font_size_active = font_active.clamp(8, 80);
     s.config.font_size_side = font_side.clamp(8, 40);
     s.config.font_size_title = font_title.clamp(8, 50);
+    if let Some(preset) = get_theme_preset(&theme_label) {
+        s.config.theme = Some(preset.name.to_string());
+        if preset.name != "custom" {
+            s.config.active_hex = preset.active_hex.to_string();
+            s.config.karaoke_hex = preset.karaoke_hex.to_string();
+            s.config.karaoke_v2_hex = preset.karaoke_v2_hex.to_string();
+            s.config.karaoke_group_hex = preset.karaoke_group_hex.to_string();
+            s.config.side_hex = preset.side_hex.to_string();
+            s.config.sub_hex = preset.sub_hex.to_string();
+            s.config.card_bg_hex = Some(preset.card_bg_hex.to_string());
+        }
+    } else {
+        s.config.theme = Some("custom".to_string());
+    }
     if !mode.is_empty() {
         s.config.karaoke_mode = mode.to_lowercase();
     }
@@ -517,10 +722,18 @@ unsafe fn save_values() -> bool {
     if !karaoke_hex.is_empty() {
         s.config.karaoke_hex = karaoke_hex.trim_start_matches('#').to_string();
     }
+    if !karaoke_v2_hex.is_empty() {
+        s.config.karaoke_v2_hex = karaoke_v2_hex.trim_start_matches('#').to_string();
+    }
+    if !karaoke_group_hex.is_empty() {
+        s.config.karaoke_group_hex = karaoke_group_hex.trim_start_matches('#').to_string();
+    }
     s.config.show_card = Some(get_check(H_CHECKS[0]));
     s.config.shadow_enabled = get_check(H_CHECKS[1]);
     s.config.auto_trim_memory = get_check(H_CHECKS[2]);
+    s.config.auto_check_updates = get_check(H_CHECKS[3]);
     s.layout_cache_dirty = true;
     save_config(&s.config);
+    redraw_main_window();
     true
 }

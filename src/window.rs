@@ -6,8 +6,8 @@ use crate::settings_window::open_settings_window;
 use crate::tray::{
     add_tray_icon, remove_tray_icon, show_tray_menu, toggle_lock_state, ID_MENU_CHECK_UPDATE,
     ID_MENU_EXIT, ID_MENU_LOCK, ID_MENU_OFFSET_MINUS, ID_MENU_OFFSET_PLUS, ID_MENU_OFFSET_RESET,
-    ID_MENU_SETTINGS, ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM, ID_MENU_SIZE_SMALL,
-    ID_MENU_TRIM_MEMORY, WM_TRAYICON,
+    ID_MENU_PROVIDER_BASE, ID_MENU_SETTINGS, ID_MENU_SIZE_LARGE, ID_MENU_SIZE_MEDIUM,
+    ID_MENU_SIZE_SMALL, ID_MENU_TRIM_MEMORY, WM_TRAYICON,
 };
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -51,6 +51,35 @@ static mut TOPMOST_TICK_COUNTER: u32 = 0;
 const TOPMOST_REASSERT_TICKS: u32 = 60;
 static mut IDLE_TRIM_COUNTER: u32 = 0;
 
+pub static mut MAIN_HWND: Option<HWND> = None;
+
+pub fn redraw_main_window() {
+    unsafe {
+        if let Some(hwnd) = MAIN_HWND {
+            if !hwnd.0.is_null() {
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+        }
+    }
+}
+
+pub fn switch_provider_by_index(idx: usize) {
+    if let Some(state_arc) = unsafe { APP_STATE.as_ref() } {
+        if let Ok(mut s) = state_arc.lock() {
+            if idx < s.available_providers.len() {
+                let hit = s.available_providers[idx].clone();
+                s.active_provider_index = idx;
+                s.provider_name = Some(hit.provider_name.clone());
+                s.plain_lyrics = hit.plain.clone();
+                let parsed_lines = crate::lrc_parser::parse_lrc(&hit.content);
+                s.lyrics_lines = parsed_lines;
+                s.layout_cache_dirty = true;
+            }
+        }
+        redraw_main_window();
+    }
+}
+
 pub unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -59,7 +88,8 @@ pub unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_CREATE => {
-            SetTimer(hwnd, 1, 33, None);
+            MAIN_HWND = Some(hwnd);
+            SetTimer(hwnd, 1, 16, None);
             add_tray_icon(hwnd);
             LRESULT(0)
         }
@@ -77,8 +107,12 @@ pub unsafe extern "system" fn wnd_proc(
                         false
                     };
                     let active_playing = s.media.is_playing && !s.media.title.is_empty();
+                    if active_playing && s.last_pos_ms > 0 {
+                        s.media.position_ms =
+                            s.last_pos_ms + s.last_pos_update.elapsed().as_millis() as u64;
+                    }
+
                     let current_pos_ms = s.media.position_ms;
-                    let pos_changed = current_pos_ms != LAST_PAINTED_POS_MS;
                     let index_changed = s.current_index != LAST_PAINTED_INDEX;
                     let active_line_is_karaoke = {
                         let mode = s.config.karaoke_mode.trim().to_lowercase();
@@ -95,7 +129,7 @@ pub unsafe extern "system" fn wnd_proc(
                     should_invalidate = still_animating
                         || s.is_loading
                         || index_changed
-                        || (active_playing && active_line_is_karaoke && pos_changed);
+                        || (active_playing && active_line_is_karaoke);
                     if should_invalidate {
                         LAST_PAINTED_INDEX = s.current_index;
                         LAST_PAINTED_POS_MS = current_pos_ms;
@@ -168,80 +202,85 @@ pub unsafe extern "system" fn wnd_proc(
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xFFFF) as u32;
-            match id {
-                ID_MENU_SETTINGS => {
-                    open_settings_window();
-                }
-                ID_MENU_CHECK_UPDATE => {
-                    crate::updater::check_for_updates_async(true);
-                }
-                ID_MENU_LOCK => {
-                    toggle_lock_state(hwnd);
-                }
-                ID_MENU_SIZE_SMALL => {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        0,
-                        0,
-                        480,
-                        160,
-                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
-                ID_MENU_SIZE_MEDIUM => {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        0,
-                        0,
-                        560,
-                        200,
-                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
-                ID_MENU_SIZE_LARGE => {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        None,
-                        0,
-                        0,
-                        680,
-                        240,
-                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                }
-                ID_MENU_OFFSET_PLUS => {
-                    if let Some(state_arc) = APP_STATE.as_ref() {
-                        if let Ok(mut s) = state_arc.lock() {
-                            s.offset_ms += 100;
-                            s.config.offset_ms = s.offset_ms;
+            if (ID_MENU_PROVIDER_BASE..ID_MENU_PROVIDER_BASE + 50).contains(&id) {
+                let idx = (id - ID_MENU_PROVIDER_BASE) as usize;
+                switch_provider_by_index(idx);
+            } else {
+                match id {
+                    ID_MENU_SETTINGS => {
+                        open_settings_window();
+                    }
+                    ID_MENU_CHECK_UPDATE => {
+                        crate::updater::check_for_updates_async(true);
+                    }
+                    ID_MENU_LOCK => {
+                        toggle_lock_state(hwnd);
+                    }
+                    ID_MENU_SIZE_SMALL => {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            0,
+                            0,
+                            480,
+                            160,
+                            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    ID_MENU_SIZE_MEDIUM => {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            0,
+                            0,
+                            560,
+                            200,
+                            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    ID_MENU_SIZE_LARGE => {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            None,
+                            0,
+                            0,
+                            680,
+                            240,
+                            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    ID_MENU_OFFSET_PLUS => {
+                        if let Some(state_arc) = APP_STATE.as_ref() {
+                            if let Ok(mut s) = state_arc.lock() {
+                                s.offset_ms += 100;
+                                s.config.offset_ms = s.offset_ms;
+                            }
                         }
                     }
-                }
-                ID_MENU_OFFSET_MINUS => {
-                    if let Some(state_arc) = APP_STATE.as_ref() {
-                        if let Ok(mut s) = state_arc.lock() {
-                            s.offset_ms -= 100;
-                            s.config.offset_ms = s.offset_ms;
+                    ID_MENU_OFFSET_MINUS => {
+                        if let Some(state_arc) = APP_STATE.as_ref() {
+                            if let Ok(mut s) = state_arc.lock() {
+                                s.offset_ms -= 100;
+                                s.config.offset_ms = s.offset_ms;
+                            }
                         }
                     }
-                }
-                ID_MENU_OFFSET_RESET => {
-                    if let Some(state_arc) = APP_STATE.as_ref() {
-                        if let Ok(mut s) = state_arc.lock() {
-                            s.offset_ms = 0;
-                            s.config.offset_ms = 0;
+                    ID_MENU_OFFSET_RESET => {
+                        if let Some(state_arc) = APP_STATE.as_ref() {
+                            if let Ok(mut s) = state_arc.lock() {
+                                s.offset_ms = 0;
+                                s.config.offset_ms = 0;
+                            }
                         }
                     }
+                    ID_MENU_TRIM_MEMORY => {
+                        crate::utils::trim_working_set();
+                    }
+                    ID_MENU_EXIT => {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    _ => {}
                 }
-                ID_MENU_TRIM_MEMORY => {
-                    crate::utils::trim_working_set();
-                }
-                ID_MENU_EXIT => {
-                    let _ = DestroyWindow(hwnd);
-                }
-                _ => {}
             }
             LRESULT(0)
         }

@@ -149,48 +149,59 @@ pub fn convert_musixmatch_word_by_word_to_ttml(input: &str) -> Option<String> {
         };
 
         let mut search_pos = 0;
-        let mut raw_pairs = Vec::new();
+        let mut time_text_pairs: Vec<(&str, &str)> = Vec::new();
 
         while let Some(start_open) = rest[search_pos..].find('<') {
             let actual_start = search_pos + start_open;
             if let Some(start_close) = rest[actual_start..].find('>') {
                 let actual_start_close = actual_start + start_close;
-                let ts_start = &rest[actual_start + 1..actual_start_close];
+                let ts = &rest[actual_start + 1..actual_start_close];
 
                 let after_tag = actual_start_close + 1;
-                let end_open = rest[after_tag..].find('<');
-                let word_text = if let Some(eo) = end_open {
-                    &rest[after_tag..after_tag + eo]
+                let next_open = rest[after_tag..].find('<');
+                let txt = if let Some(no) = next_open {
+                    &rest[after_tag..after_tag + no]
                 } else {
                     &rest[after_tag..]
                 };
 
-                if let Some(end_open_rel) = end_open {
-                    let actual_end_open = after_tag + end_open_rel;
-                    if let Some(end_close_rel) = rest[actual_end_open..].find('>') {
-                        let actual_end_close = actual_end_open + end_close_rel;
-                        let ts_end = &rest[actual_end_open + 1..actual_end_close];
-
-                        raw_pairs.push((ts_start, ts_end, word_text));
-                        search_pos = actual_end_close + 1;
-                        continue;
-                    }
-                }
-
-                raw_pairs.push((ts_start, "", word_text));
-                search_pos = after_tag + word_text.len();
+                time_text_pairs.push((ts, txt));
+                search_pos = after_tag + txt.len();
             } else {
                 break;
             }
         }
 
+        let mut raw_pairs = Vec::new();
+        let pair_count = time_text_pairs.len();
+        for i in 0..pair_count {
+            let ts_start = time_text_pairs[i].0;
+            let word_text = time_text_pairs[i].1;
+            let ts_end = if i + 1 < pair_count {
+                time_text_pairs[i + 1].0
+            } else {
+                ""
+            };
+            raw_pairs.push((ts_start, ts_end, word_text));
+        }
+
         let mut valid_words: Vec<(Option<u64>, Option<u64>, String)> = Vec::new();
-        for (ts_start, ts_end, word_text) in raw_pairs {
+        let raw_pairs_count = raw_pairs.len();
+        for (idx, (ts_start, ts_end, word_text)) in raw_pairs.iter().enumerate() {
             let clean_w = word_text.trim();
             if clean_w.is_empty() {
-                if let Some(last) = valid_words.last_mut() {
-                    if !last.2.ends_with(' ') {
-                        last.2.push(' ');
+                let has_following_word = if idx + 1 < raw_pairs_count {
+                    raw_pairs[idx + 1..]
+                        .iter()
+                        .any(|(_, _, w)| !w.trim().is_empty())
+                } else {
+                    false
+                };
+                if has_following_word {
+                    if let Some(last) = valid_words.last_mut() {
+                        if !last.2.ends_with(' ') && !last.2.ends_with('-') {
+                            last.2.push(' ');
+                        }
                     }
                 }
                 continue;
@@ -237,7 +248,7 @@ pub fn convert_musixmatch_word_by_word_to_ttml(input: &str) -> Option<String> {
         let total_count = valid_words.len();
         for (idx, (start_ms, end_ms, word_text)) in valid_words.iter().enumerate() {
             let mut final_text = word_text.clone();
-            if idx + 1 < total_count && !final_text.ends_with(' ') {
+            if idx + 1 < total_count && !final_text.ends_with(' ') && !final_text.ends_with('-') {
                 final_text.push(' ');
             }
             let escaped_text = final_text
@@ -289,14 +300,14 @@ pub fn convert_musixmatch_word_by_word_to_ttml(input: &str) -> Option<String> {
     }
 }
 
-fn parse_betterlyrics_response(text: &str) -> Option<LyricsResult> {
+fn parse_betterlyrics_response(text: &str) -> Option<(LyricsResult, u8)> {
     if !text.trim().starts_with('{') {
         return None;
     }
 
     let resp: BetterLyricsResponse = serde_json::from_str(text).ok()?;
 
-    // 1. Try TTML sources (word-by-word karaoke)
+    // 1. Try TTML sources (word-by-word karaoke from Apple Music, AMLL, Unison, TTMLLIB, etc.)
     let ttml_candidate = extract_str(resp.better_lyrics_ttml.as_ref())
         .or_else(|| extract_str(resp.apple_music_ttml.as_ref()))
         .or_else(|| extract_str(resp.amll_ttml.as_ref()))
@@ -305,18 +316,22 @@ fn parse_betterlyrics_response(text: &str) -> Option<LyricsResult> {
         .or_else(|| extract_str(resp.binimum_ttml.as_ref()))
         .or_else(|| extract_str(resp.go_lyrics_api_ttml.as_ref()));
 
-    // 2. Try Musixmatch word-by-word LRC converted to TTML XML
-    let mx_word = extract_str(resp.musixmatch_word_by_word_lyrics.as_ref())
-        .and_then(|raw| convert_musixmatch_word_by_word_to_ttml(&raw));
-
-    // 3. Try synced LRC sources
-    let synced_lrc = extract_str(resp.musixmatch_synced_lyrics.as_ref())
+    let (mut main_synced, tier) = if let Some(ttml) = ttml_candidate {
+        (Some(ttml), 4)
+    } else if let Some(mx_word) = extract_str(resp.musixmatch_word_by_word_lyrics.as_ref())
+        .and_then(|raw| convert_musixmatch_word_by_word_to_ttml(&raw))
+    {
+        (Some(mx_word), 3)
+    } else if let Some(synced_lrc) = extract_str(resp.musixmatch_synced_lyrics.as_ref())
         .or_else(|| extract_str(resp.lrclib_synced_lyrics.as_ref()))
         .or_else(|| extract_str(resp.qq_lyrics_api_lyrics.as_ref()))
         .or_else(|| extract_str(resp.kugou_lyrics_api_lyrics.as_ref()))
-        .or_else(|| extract_str(resp.kugou_direct_lyrics.as_ref()));
-
-    let mut main_synced = ttml_candidate.or(mx_word).or(synced_lrc);
+        .or_else(|| extract_str(resp.kugou_direct_lyrics.as_ref()))
+    {
+        (Some(synced_lrc), 2)
+    } else {
+        (None, 0)
+    };
 
     // 4. Attach pre-provided Romaji / Romaja / Pinyin sub-text if present
     let subtext_candidate = extract_str(resp.romaji_lyrics.as_ref())
@@ -414,11 +429,22 @@ fn parse_betterlyrics_response(text: &str) -> Option<LyricsResult> {
 
     let plain = extract_str(resp.lrclib_plain_lyrics.as_ref());
 
-    if main_synced.is_some() || plain.is_some() {
-        Some(LyricsResult {
-            synced: main_synced,
-            plain,
-        })
+    if main_synced.is_some() {
+        Some((
+            LyricsResult {
+                synced: main_synced,
+                plain,
+            },
+            tier,
+        ))
+    } else if plain.is_some() {
+        Some((
+            LyricsResult {
+                synced: None,
+                plain,
+            },
+            1,
+        ))
     } else {
         None
     }
@@ -431,59 +457,83 @@ pub async fn fetch_betterlyrics_lyrics(
     album: &str,
     duration: Option<u64>,
 ) -> Result<LyricsResult, Box<dyn std::error::Error + Send + Sync>> {
+    let raw_title = title.trim();
     let clean_title = title.split('(').next().unwrap_or(title).trim();
-    let enc_song = urlencoding::encode(clean_title);
-    let enc_artist = urlencoding::encode(artist);
 
-    // Fast query (song + artist) responds in ~300ms on lyrics.pyoi.eu.org
-    let simple_url = format!(
-        "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
-        enc_song, enc_artist
-    );
+    let mut titles_to_try = vec![raw_title];
+    if !clean_title.is_empty() && clean_title != raw_title {
+        titles_to_try.push(clean_title);
+    }
 
-    let has_detailed = !album.trim().is_empty() || duration.is_some();
+    let artist_vars = crate::utils::get_artist_variations(artist);
 
-    if !has_detailed {
-        if let Ok(text) = http_get_with_debug(client, &simple_url, "BetterLyrics").await {
-            if let Some(res) = parse_betterlyrics_response(&text) {
-                return Ok(res);
+    let mut set = tokio::task::JoinSet::new();
+
+    for song_title in titles_to_try {
+        for art in &artist_vars {
+            let enc_song = urlencoding::encode(song_title);
+            let enc_artist = urlencoding::encode(art);
+
+            let simple_url = format!(
+                "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
+                enc_song, enc_artist
+            );
+
+            let client_c1 = client.clone();
+            set.spawn(async move {
+                if let Ok(text) = http_get_with_debug(&client_c1, &simple_url, "BetterLyrics").await
+                {
+                    parse_betterlyrics_response(&text)
+                } else {
+                    None
+                }
+            });
+
+            if !album.trim().is_empty() || duration.is_some() {
+                let mut detailed_url = format!(
+                    "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
+                    enc_song, enc_artist
+                );
+                if !album.trim().is_empty() {
+                    detailed_url.push_str(&format!("&album={}", urlencoding::encode(album)));
+                }
+                if let Some(dur) = duration {
+                    detailed_url.push_str(&format!("&duration={}", dur));
+                }
+
+                let client_c2 = client.clone();
+                set.spawn(async move {
+                    if let Ok(text) =
+                        http_get_with_debug(&client_c2, &detailed_url, "BetterLyrics-Detailed")
+                            .await
+                    {
+                        parse_betterlyrics_response(&text)
+                    } else {
+                        None
+                    }
+                });
             }
         }
-        return Err("BetterLyrics API returned no lyrics".into());
     }
 
-    let mut detailed_url = format!(
-        "https://lyrics.pyoi.eu.org/lyrics?song={}&artist={}",
-        enc_song, enc_artist
-    );
-    if !album.trim().is_empty() {
-        detailed_url.push_str(&format!("&album={}", urlencoding::encode(album)));
-    }
-    if let Some(dur) = duration {
-        detailed_url.push_str(&format!("&duration={}", dur));
-    }
+    let mut best_result: Option<LyricsResult> = None;
+    let mut best_tier: u8 = 0;
 
-    // Execute simple_url and detailed_url in parallel using tokio::join!
-    let simple_fut = async {
-        if let Ok(text) = http_get_with_debug(client, &simple_url, "BetterLyrics").await {
-            parse_betterlyrics_response(&text)
-        } else {
-            None
+    while let Some(joined) = set.join_next().await {
+        if let Ok(Some((res, tier))) = joined {
+            if tier > best_tier || best_result.is_none() {
+                best_tier = tier;
+                best_result = Some(res);
+                if best_tier >= 4 {
+                    // Highest possible quality (native TTML) found!
+                    set.abort_all();
+                    break;
+                }
+            }
         }
-    };
+    }
 
-    let detailed_fut = async {
-        if let Ok(text) = http_get_with_debug(client, &detailed_url, "BetterLyrics-Detailed").await
-        {
-            parse_betterlyrics_response(&text)
-        } else {
-            None
-        }
-    };
-
-    let (simple_res, detailed_res) = tokio::join!(simple_fut, detailed_fut);
-
-    if let Some(res) = simple_res.or(detailed_res) {
+    if let Some(res) = best_result {
         Ok(res)
     } else {
         Err("BetterLyrics API returned no lyrics".into())
@@ -506,6 +556,14 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_musixmatch_word_by_word_hyphen_no_trailing_space() {
+        let input = "[00:19.35] <00:19.35> Maaf <00:19.44>   <00:19.86> tak <00:20.17>   <00:20.22> bisa <00:20.89>   <00:20.92> pulang, <00:21.73>   <00:21.76> penghasilanku <00:22.96>   <00:23.09> pas- <00:23.86> pasan <00:24.11>";
+        let res = convert_musixmatch_word_by_word_to_ttml(input).unwrap();
+        assert!(res.contains("<span begin=\"00:23.090\" end=\"00:23.860\">pas-</span>"));
+        assert!(res.contains("<span begin=\"00:23.860\" end=\"00:24.110\">pasan</span>"));
+    }
+
+    #[test]
     fn test_extract_str_nested_json_string() {
         let raw_json = serde_json::json!({
             "betterLyricsTtml": "{\"ttml\":\"<tt xmlns=\\\"http://www.w3.org/ns/ttml\\\"><p begin=\\\"00:01.00\\\">Hello</p></tt>\"}"
@@ -515,5 +573,29 @@ mod tests {
             extracted,
             "<tt xmlns=\"http://www.w3.org/ns/ttml\"><p begin=\"00:01.00\">Hello</p></tt>"
         );
+    }
+
+    #[test]
+    fn test_parse_betterlyrics_response_tier() {
+        let json_native = serde_json::json!({
+            "betterLyricsTtml": "<tt xmlns=\"http://www.w3.org/ns/ttml\"><p begin=\"00:01.00\">Native</p></tt>",
+            "musixmatchWordByWordLyrics": "[00:01.00] <00:01.00> Fallback <00:02.00>"
+        })
+        .to_string();
+
+        let (res, tier) = parse_betterlyrics_response(&json_native).unwrap();
+        assert_eq!(tier, 4);
+        assert_eq!(
+            res.synced.unwrap(),
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\"><p begin=\"00:01.00\">Native</p></tt>"
+        );
+
+        let json_mx = serde_json::json!({
+            "musixmatchWordByWordLyrics": "[00:01.00] <00:01.00> Fallback <00:02.00>"
+        })
+        .to_string();
+
+        let (_res, tier_mx) = parse_betterlyrics_response(&json_mx).unwrap();
+        assert_eq!(tier_mx, 3);
     }
 }

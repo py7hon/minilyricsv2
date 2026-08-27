@@ -236,29 +236,35 @@ pub async fn fetch_lyricsplus_lyrics(
 ) -> Result<LyricsResult, Box<dyn std::error::Error + Send + Sync>> {
     let clean_title = title.split('(').next().unwrap_or(title).trim();
     let enc_title = urlencoding::encode(clean_title);
-    let enc_artist = urlencoding::encode(artist);
     let enc_album = urlencoding::encode(album);
     let dur_val = duration.unwrap_or(0);
 
-    let urls = [
-        format!(
+    let artist_vars = crate::utils::get_artist_variations(artist);
+    let mut urls = Vec::new();
+
+    for art in &artist_vars {
+        let enc_artist = urlencoding::encode(art);
+        urls.push(format!(
             "https://lyrics-api.boidu.dev/getLyrics?s={}&a={}&al={}&d={}",
             enc_title, enc_artist, enc_album, dur_val
-        ),
-        format!(
+        ));
+        urls.push(format!(
             "https://lyricsplus.prjktla.my.id/v2/lyrics/get?title={}&artist={}&album={}&duration={}",
             enc_title, enc_artist, enc_album, dur_val
-        ),
-        format!(
+        ));
+        urls.push(format!(
             "https://lyricsplus.prjktla.my.id/v1/lyrics?title={}&artist={}&album={}&duration={}",
             enc_title, enc_artist, enc_album, dur_val
-        ),
-        format!(
+        ));
+        urls.push(format!(
             "https://lyricsplus-seven.vercel.app/v2/lyrics/get?title={}&artist={}&album={}&duration={}",
             enc_title, enc_artist, enc_album, dur_val
-        ),
-        format!("https://lyricsplus.prjktla.my.id/v2/lyrics/get?title={}&artist={}", enc_title, enc_artist),
-    ];
+        ));
+        urls.push(format!(
+            "https://lyricsplus.prjktla.my.id/v2/lyrics/get?title={}&artist={}",
+            enc_title, enc_artist
+        ));
+    }
 
     // Race all fallback URLs concurrently: whichever request returns usable
     // lyrics first wins immediately, and the rest are cancelled instead of

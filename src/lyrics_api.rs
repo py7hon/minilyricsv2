@@ -1,4 +1,5 @@
 // src/lyrics_api.rs
+use crate::app_state::ProviderHit;
 use crate::dprintln;
 use crate::providers::amll::fetch_amll_lyrics;
 use crate::providers::betterlyrics::fetch_betterlyrics_lyrics;
@@ -19,7 +20,36 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 fn is_karaoke_or_ttml_format(text: &str) -> bool {
-    text.contains("<tt") || text.contains("xml") || (text.contains('<') && text.contains('>'))
+    if text.is_empty() {
+        return false;
+    }
+    // TTML XML format with tags or spans
+    if text.contains("<tt")
+        || text.contains("<span")
+        || text.contains("<p")
+        || text.contains("begin=")
+    {
+        return true;
+    }
+    // Word-by-word LRC tags like <00:12.34> or <01:23.45> or (00:12.34) or <1234>
+    if text.contains("<0")
+        || text.contains("<1")
+        || text.contains("<2")
+        || text.contains("(0")
+        || text.contains("(1")
+        || text.contains("(2")
+    {
+        return true;
+    }
+    // KPOE / Musixmatch / JSON word arrays
+    if text.contains("\"words\"")
+        || text.contains("\"syllables\"")
+        || text.contains("\"background\"")
+    {
+        return true;
+    }
+    // Generic XML/TTML tags
+    text.contains("<?xml") || (text.contains('<') && text.contains('>') && text.contains('/'))
 }
 
 fn get_response_preview(content: &str) -> String {
@@ -83,7 +113,10 @@ impl LyricsClient {
         artist: &str,
         album: &str,
         duration: Option<u64>,
-    ) -> Result<(String, Option<String>, String), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<
+        (String, Option<String>, String, Vec<ProviderHit>),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         if title.trim().is_empty() {
             return Err("Title is empty".into());
         }
@@ -117,7 +150,59 @@ impl LyricsClient {
         let client = self.reqwest_client.clone();
         let (tx, mut rx) = mpsc::channel::<(usize, Option<TtmlHit>, Option<LrcHit>)>(11);
 
-        // 0. BetterLyrics
+        // 0. LyricsPlus (Top Priority - Native Apple Music TTML with multi-agent support & word timing)
+        {
+            let client_c = client.clone();
+            let title_c = title.to_string();
+            let artist_c = artist.to_string();
+            let album_c = album.to_string();
+            let tx_c = tx.clone();
+            tokio::spawn(async move {
+                let t = Instant::now();
+                let res = tokio::time::timeout(
+                    Duration::from_secs(6),
+                    fetch_lyricsplus_lyrics(&client_c, &title_c, &artist_c, &album_c, duration),
+                )
+                .await;
+                let hit = match res {
+                    Ok(Ok(res)) => {
+                        let is_ttml = res
+                            .synced
+                            .as_ref()
+                            .is_some_and(|s| is_karaoke_or_ttml_format(s));
+                        dprintln!(
+                            "  ├─ LyricsPlus {} ✅ ({}ms) | {} bytes",
+                            if is_ttml { "TTML" } else { "LRC" },
+                            t.elapsed().as_millis(),
+                            res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
+                        );
+                        (
+                            is_ttml.then(|| TtmlHit {
+                                content: res.synced.clone().unwrap_or_default(),
+                                plain: res.plain.clone(),
+                                provider: "LyricsPlus (TTML)".into(),
+                            }),
+                            res.synced.map(|content| LrcHit {
+                                content,
+                                plain: res.plain,
+                                provider: "LyricsPlus".into(),
+                            }),
+                        )
+                    }
+                    Ok(Err(e)) => {
+                        dprintln!("  ├─ LyricsPlus ❌ ({}ms) {}", t.elapsed().as_millis(), e);
+                        (None, None)
+                    }
+                    Err(_) => {
+                        dprintln!("  ├─ LyricsPlus ❌ ({}ms) Timeout", t.elapsed().as_millis());
+                        (None, None)
+                    }
+                };
+                let _ = tx_c.send((0, hit.0, hit.1)).await;
+            });
+        }
+
+        // 1. BetterLyrics
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -168,11 +253,11 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((0, hit.0, hit.1)).await;
+                let _ = tx_c.send((1, hit.0, hit.1)).await;
             });
         }
 
-        // 1. Boidu
+        // 2. Boidu
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -217,58 +302,6 @@ impl LyricsClient {
                     }
                     Err(_) => {
                         dprintln!("  ├─ Boidu ❌ ({}ms) Timeout", t.elapsed().as_millis());
-                        (None, None)
-                    }
-                };
-                let _ = tx_c.send((1, hit.0, hit.1)).await;
-            });
-        }
-
-        // 2. LyricsPlus
-        {
-            let client_c = client.clone();
-            let title_c = title.to_string();
-            let artist_c = artist.to_string();
-            let album_c = album.to_string();
-            let tx_c = tx.clone();
-            tokio::spawn(async move {
-                let t = Instant::now();
-                let res = tokio::time::timeout(
-                    Duration::from_secs(6),
-                    fetch_lyricsplus_lyrics(&client_c, &title_c, &artist_c, &album_c, duration),
-                )
-                .await;
-                let hit = match res {
-                    Ok(Ok(res)) => {
-                        let is_ttml = res
-                            .synced
-                            .as_ref()
-                            .is_some_and(|s| is_karaoke_or_ttml_format(s));
-                        dprintln!(
-                            "  ├─ LyricsPlus {} ✅ ({}ms) | {} bytes",
-                            if is_ttml { "TTML" } else { "LRC" },
-                            t.elapsed().as_millis(),
-                            res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
-                        );
-                        (
-                            is_ttml.then(|| TtmlHit {
-                                content: res.synced.clone().unwrap_or_default(),
-                                plain: res.plain.clone(),
-                                provider: "LyricsPlus (TTML)".into(),
-                            }),
-                            res.synced.map(|content| LrcHit {
-                                content,
-                                plain: res.plain,
-                                provider: "LyricsPlus".into(),
-                            }),
-                        )
-                    }
-                    Ok(Err(e)) => {
-                        dprintln!("  ├─ LyricsPlus ❌ ({}ms) {}", t.elapsed().as_millis(), e);
-                        (None, None)
-                    }
-                    Err(_) => {
-                        dprintln!("  ├─ LyricsPlus ❌ ({}ms) Timeout", t.elapsed().as_millis());
                         (None, None)
                     }
                 };
@@ -636,44 +669,73 @@ impl LyricsClient {
         // Drop local sender handle so receiver closes when all 11 background tasks complete
         drop(tx);
 
+        let mut ttml_hits: HashMap<usize, TtmlHit> = HashMap::new();
         let mut lrc_hits: HashMap<usize, LrcHit> = HashMap::new();
 
         while let Some((idx, ttml_opt, lrc_opt)) = rx.recv().await {
-            // Eager early-exit: Return immediately on the first valid TTML hit
             if let Some(hit) = ttml_opt {
-                dprintln!(
-                    "┌───────────────────────────────────────────────────────────────────────────────┐"
-                );
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: {} | Total Time: {}ms",
-                    hit.provider,
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("│    Preview: \"{}\"", get_response_preview(&hit.content));
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((hit.content, hit.plain, hit.provider));
+                ttml_hits.entry(idx).or_insert(hit);
             }
-
             if let Some(hit) = lrc_opt {
                 lrc_hits.entry(idx).or_insert(hit);
             }
+
+            // Eager early-exit: If Index 0 (LyricsPlus) has returned a TTML hit, exit early!
+            if ttml_hits.contains_key(&0) {
+                break;
+            }
         }
 
-        // Fallback: If no TTML hit arrived, return the highest-priority LRC hit
+        let mut available_hits: Vec<ProviderHit> = Vec::new();
+        let mut seen_providers = std::collections::HashSet::new();
+
+        // 1. Collect all Word-by-Word / TTML hits in priority order 0..11
+        for idx in 0..11 {
+            if let Some(hit) = ttml_hits.remove(&idx) {
+                seen_providers.insert(hit.provider.clone());
+                available_hits.push(ProviderHit {
+                    provider_name: hit.provider,
+                    content: hit.content,
+                    plain: hit.plain,
+                });
+            }
+        }
+
+        // 2. Collect all Line-by-Line LRC hits in priority order 0..11
         for idx in 0..11 {
             if let Some(hit) = lrc_hits.remove(&idx) {
-                dprintln!(
-                    "┌───────────────────────────────────────────────────────────────────────────────┐"
-                );
-                dprintln!(
-                    "│ 🎉 [MATCH FOUND] Provider: {} (Synced LRC) | Total Time: {}ms",
-                    hit.provider,
-                    overall_start.elapsed().as_millis()
-                );
-                dprintln!("│    Preview: \"{}\"", get_response_preview(&hit.content));
-                dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
-                return Ok((hit.content, hit.plain, hit.provider));
+                if !seen_providers.contains(&hit.provider) {
+                    seen_providers.insert(hit.provider.clone());
+                    available_hits.push(ProviderHit {
+                        provider_name: hit.provider,
+                        content: hit.content,
+                        plain: hit.plain,
+                    });
+                }
             }
+        }
+
+        if let Some(first_hit) = available_hits.first().cloned() {
+            dprintln!(
+                "┌───────────────────────────────────────────────────────────────────────────────┐"
+            );
+            dprintln!(
+                "│ 🎉 [MATCH FOUND] Provider: {} | Total Time: {}ms | Total Sources: {}",
+                first_hit.provider_name,
+                overall_start.elapsed().as_millis(),
+                available_hits.len()
+            );
+            dprintln!(
+                "│    Preview: \"{}\"",
+                get_response_preview(&first_hit.content)
+            );
+            dprintln!("└───────────────────────────────────────────────────────────────────────────────┘\n");
+            return Ok((
+                first_hit.content,
+                first_hit.plain,
+                first_hit.provider_name,
+                available_hits,
+            ));
         }
 
         dprintln!(
