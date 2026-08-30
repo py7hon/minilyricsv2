@@ -65,16 +65,24 @@ pub fn redraw_main_window() {
 
 pub fn switch_provider_by_index(idx: usize) {
     if let Some(state_arc) = unsafe { APP_STATE.as_ref() } {
-        if let Ok(mut s) = state_arc.lock() {
+        let lines = if let Ok(mut s) = state_arc.lock() {
             if idx < s.available_providers.len() {
                 let hit = s.available_providers[idx].clone();
                 s.active_provider_index = idx;
                 s.provider_name = Some(hit.provider_name.clone());
                 s.plain_lyrics = hit.plain.clone();
                 let parsed_lines = crate::lrc_parser::parse_lrc(&hit.content);
-                s.lyrics_lines = parsed_lines;
+                s.lyrics_lines = parsed_lines.clone();
                 s.layout_cache_dirty = true;
+                Some(parsed_lines)
+            } else {
+                None
             }
+        } else {
+            None
+        };
+        if let Some(parsed_lines) = lines {
+            crate::lyrics_api::LyricsClient::spawn_subtext_fill(state_arc, parsed_lines);
         }
         redraw_main_window();
     }

@@ -1,11 +1,70 @@
 use crate::lrc_parser::{convert_hangul_text_to_romaja, fix_common_romaji_misreadings, is_cjk};
+use pinyin::ToPinyin;
 use reqwest::Client;
 use serde_json::Value;
+
+/// Offline local transliteration: Romaji (kakasi), Pinyin (pinyin crate).
+/// Romaja stays algorithmic via convert_hangul_text_to_romaja.
+pub fn transliterate_local(text: &str) -> Option<String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return None;
+    }
+
+    let has_jp = kakasi::is_japanese(clean) != kakasi::IsJapanese::False;
+    if has_jp {
+        let romaji = kakasi::convert(clean).romaji.trim().to_string();
+        if !romaji.is_empty() && !romaji.chars().any(is_cjk) {
+            return Some(romaji);
+        }
+    }
+
+    let has_hanzi = clean
+        .chars()
+        .any(|c| (0x4E00..=0x9FFF).contains(&(c as u32)));
+    let has_kana = clean
+        .chars()
+        .any(|c| (0x3040..=0x30FF).contains(&(c as u32)));
+    if has_hanzi && !has_kana {
+        let mut out = String::new();
+        for ch in clean.chars() {
+            if let Some(p) = ch.to_pinyin() {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(p.with_tone());
+            } else {
+                out.push(ch);
+            }
+        }
+        let trimmed = out.trim().to_string();
+        if !trimmed.is_empty() && trimmed != clean {
+            return Some(trimmed);
+        }
+    }
+
+    let has_hangul = clean
+        .chars()
+        .any(|c| (0xAC00..=0xD7AF).contains(&(c as u32)));
+    if has_hangul {
+        let romaja = convert_hangul_text_to_romaja(clean);
+        if !romaja.trim().is_empty() {
+            return Some(romaja.trim().to_string());
+        }
+    }
+
+    None
+}
 
 pub async fn translate_text(client: &Client, text: &str) -> Option<String> {
     let clean = text.trim();
     if clean.is_empty() || clean == "♪" || clean.is_ascii() {
         return None;
+    }
+
+    // Local crates first: no network, no Google rate limits.
+    if let Some(local) = transliterate_local(clean) {
+        return Some(local);
     }
 
     let encoded = urlencoding::encode(clean);

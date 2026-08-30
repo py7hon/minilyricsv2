@@ -1,3 +1,22 @@
+# Release Notes - v0.1.14 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🌏 Offline Local Transliteration Engine (Romaji / Pinyin / Romaja)**:
+  - Added `kakasi` (Japanese → Romaji) and `pinyin` (Chinese → Pinyin with tone marks) crates as a **local, offline-first transliteration layer** in `src/providers/translation.rs` (`transliterate_local()`).
+  - Runs **before** Google Translate: zero network latency, no rate limits, works fully offline.
+  - Korean Romaja continues via the in-repo algorithmic Hangul converter; Google Translate remains as fallback for edge cases.
+- **🚫 BetterLyrics API Romaji Dropped**:
+  - Removed usage of `romajiLyrics` / `romajaLyrics` / `pinyinLyrics` fields from the BetterLyrics API response (`src/providers/betterlyrics.rs`) — the API-provided romanization was misaligned per-line (e.g. "dorero howakatta"). Sub-text is now generated exclusively by the local crates, which produce cleaner output.
+- **🔧 Tray Provider Selector Fix (Debug Mode Missing Sources)**:
+  - Fixed the provider race loop in `src/lyrics_api.rs` exiting immediately when LyricsPlus (index 0) returned a TTML winner — sibling providers like BetterLyrics that had already responded were discarded from the channel and never appeared in the tray "Lyrics Source" submenu.
+  - The collector now keeps draining for a 1.5s grace window after the winner is known, so providers that already responded still land in the selector (without waiting the full 6s timeout).
+- **🎤 Romaji/Pinyin Preserved Across Provider Switch**:
+  - Extracted the sub-text fill pass into a shared `LyricsClient::spawn_subtext_fill()` (`src/lyrics_api.rs`), called by both the initial fetch path (`src/main.rs`) and tray provider switching (`src/window.rs:switch_provider_by_index`).
+  - Switching lyrics source from the tray menu now re-runs the local transliteration pass, so Romaji/Romaja/Pinyin badges stay visible on every provider.
+
+---
+
 # Release Notes - v0.1.13 📜✨
 
 ## 🌟 Highlights & Major Improvements

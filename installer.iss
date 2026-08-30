@@ -1,5 +1,5 @@
 #define MyAppName "MiniLyrics V2"
-#define MyAppVersion "0.1.13"
+#define MyAppVersion "0.1.14"
 #define MyAppPublisher "Iqbal Rifai"
 #define MyAppURL "https://github.com/py7hon/minilyricsv2"
 #define MyAppExeName "minilyricv2.exe"

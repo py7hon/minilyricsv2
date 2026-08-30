@@ -257,40 +257,21 @@ async fn main() {
                             s.layout_cache_dirty = true;
                         }
 
-                        // Background translation task so lyrics display instantly on screen!
-                        let state_trans = state_clone.clone();
-                        let client_trans = lyrics_client.clone();
-                        tokio::spawn(async move {
-                            let translation_futs =
-                                parsed_lines.iter().enumerate().filter_map(|(idx, line)| {
-                                    let sub_str = line.sub_text.as_deref().unwrap_or("").trim();
-                                    let needs_translation = is_amll
-                                        || sub_str.is_empty()
-                                        || sub_str == line.text.trim()
-                                        || (line.text.chars().any(is_cjk)
-                                            && sub_str.chars().any(is_cjk));
-                                    needs_translation.then(|| {
-                                        let text = line.text.clone();
-                                        let client = client_trans.clone();
-                                        async move { (idx, client.translate_text(&text).await) }
-                                    })
-                                });
-                            let translations = futures::future::join_all(translation_futs).await;
-                            let mut updated = false;
-                            if let Ok(mut s) = state_trans.lock() {
-                                for (idx, trans_opt) in translations {
-                                    if let Some(trans) = trans_opt {
-                                        if idx < s.lyrics_lines.len() {
-                                            s.lyrics_lines[idx].sub_text = Some(trans);
-                                            updated = true;
-                                        }
-                                    }
-                                }
-                                if updated {
-                                    s.layout_cache_dirty = true;
+                        // Background sub-text fill so lyrics display instantly on screen!
+                        if is_amll {
+                            // ponytail: AMLL lines with existing CJK sub_text
+                            // (provider-provided translation) also get local
+                            // transliteration preferred over sentence translation.
+                            for line in &mut parsed_lines {
+                                if line.sub_text.is_some() && line.text.chars().any(is_cjk) {
+                                    line.sub_text = None;
                                 }
                             }
-                        });
+                            if let Ok(mut s) = state_clone.lock() {
+                                s.lyrics_lines = parsed_lines.clone();
+                            }
+                        }
+                        LyricsClient::spawn_subtext_fill(&state_clone, parsed_lines);
                     }
                     Err(e) => {
                         if let Ok(mut s) = state_clone.lock() {

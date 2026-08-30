@@ -32,3 +32,4 @@ alignment = "auto"
 theme = "catppuccin_mocha"
 auto_trim_memory = true
 trim_interval_secs = 5
+auto_check_updates = true

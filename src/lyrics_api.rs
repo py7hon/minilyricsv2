@@ -1,6 +1,7 @@
 // src/lyrics_api.rs
-use crate::app_state::ProviderHit;
+use crate::app_state::{AppState, ProviderHit};
 use crate::dprintln;
+use crate::lrc_parser::{is_cjk, LrcLine};
 use crate::providers::amll::fetch_amll_lyrics;
 use crate::providers::betterlyrics::fetch_betterlyrics_lyrics;
 use crate::providers::binimum::fetch_binimum_lyrics;
@@ -16,6 +17,7 @@ use crate::providers::ttmllib::fetch_ttmllib_lyrics;
 use crate::providers::unison::fetch_unison_lyrics;
 use reqwest::Client;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -148,7 +150,7 @@ impl LyricsClient {
         );
 
         let client = self.reqwest_client.clone();
-        let (tx, mut rx) = mpsc::channel::<(usize, Option<TtmlHit>, Option<LrcHit>)>(11);
+        let (tx, rx) = mpsc::channel::<(usize, Option<TtmlHit>, Option<LrcHit>)>(11);
 
         // 0. LyricsPlus (Top Priority - Native Apple Music TTML with multi-agent support & word timing)
         {
@@ -669,22 +671,42 @@ impl LyricsClient {
         // Drop local sender handle so receiver closes when all 11 background tasks complete
         drop(tx);
 
-        let mut ttml_hits: HashMap<usize, TtmlHit> = HashMap::new();
-        let mut lrc_hits: HashMap<usize, LrcHit> = HashMap::new();
-
-        while let Some((idx, ttml_opt, lrc_opt)) = rx.recv().await {
-            if let Some(hit) = ttml_opt {
-                ttml_hits.entry(idx).or_insert(hit);
+        // Collect hits from all providers. When the priority winner (idx 0,
+        // LyricsPlus) returns a TTML hit the display result is known — but keep
+        // draining for a short grace window so sibling providers that also
+        // responded still land in the tray provider selector.
+        async fn collect_provider_hits(
+            mut rx: mpsc::Receiver<(usize, Option<TtmlHit>, Option<LrcHit>)>,
+        ) -> (HashMap<usize, TtmlHit>, HashMap<usize, LrcHit>) {
+            const WINNER_GRACE: Duration = Duration::from_millis(1500);
+            let mut ttml_hits: HashMap<usize, TtmlHit> = HashMap::new();
+            let mut lrc_hits: HashMap<usize, LrcHit> = HashMap::new();
+            let mut deadline: Option<tokio::time::Instant> = None;
+            loop {
+                let msg = match deadline {
+                    Some(dl) => match tokio::time::timeout_at(dl, rx.recv()).await {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    },
+                    None => rx.recv().await,
+                };
+                let Some((idx, ttml_opt, lrc_opt)) = msg else {
+                    break;
+                };
+                if let Some(hit) = ttml_opt {
+                    ttml_hits.entry(idx).or_insert(hit);
+                }
+                if let Some(hit) = lrc_opt {
+                    lrc_hits.entry(idx).or_insert(hit);
+                }
+                if deadline.is_none() && ttml_hits.contains_key(&0) {
+                    deadline = Some(tokio::time::Instant::now() + WINNER_GRACE);
+                }
             }
-            if let Some(hit) = lrc_opt {
-                lrc_hits.entry(idx).or_insert(hit);
-            }
-
-            // Eager early-exit: If Index 0 (LyricsPlus) has returned a TTML hit, exit early!
-            if ttml_hits.contains_key(&0) {
-                break;
-            }
+            (ttml_hits, lrc_hits)
         }
+
+        let (mut ttml_hits, mut lrc_hits) = collect_provider_hits(rx).await;
 
         let mut available_hits: Vec<ProviderHit> = Vec::new();
         let mut seen_providers = std::collections::HashSet::new();
@@ -754,5 +776,41 @@ impl LyricsClient {
 
     pub async fn translate_text(&self, text: &str) -> Option<String> {
         translate_text(&self.reqwest_client, text).await
+    }
+
+    /// Fill missing sub-text (Romaji/Romaja/Pinyin/translation) for parsed
+    /// lyrics lines in AppState. Shared by initial fetch and tray provider
+    /// switching so sub-text survives provider changes.
+    pub fn spawn_subtext_fill(state: &Arc<Mutex<AppState>>, lines: Vec<LrcLine>) {
+        let state_c = state.clone();
+        let client = LyricsClient::new();
+        tokio::spawn(async move {
+            let futs = lines.iter().enumerate().filter_map(|(idx, line)| {
+                let sub_str = line.sub_text.as_deref().unwrap_or("").trim();
+                let needs = sub_str.is_empty()
+                    || sub_str == line.text.trim()
+                    || (line.text.chars().any(is_cjk) && sub_str.chars().any(is_cjk));
+                needs.then(|| {
+                    let text = line.text.clone();
+                    let c = client.clone();
+                    async move { (idx, c.translate_text(&text).await) }
+                })
+            });
+            let translations = futures::future::join_all(futs).await;
+            let mut updated = false;
+            if let Ok(mut s) = state_c.lock() {
+                for (idx, trans_opt) in translations {
+                    if let Some(trans) = trans_opt {
+                        if idx < s.lyrics_lines.len() {
+                            s.lyrics_lines[idx].sub_text = Some(trans);
+                            updated = true;
+                        }
+                    }
+                }
+                if updated {
+                    s.layout_cache_dirty = true;
+                }
+            }
+        });
     }
 }
