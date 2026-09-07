@@ -9,7 +9,6 @@ use crate::providers::boidu::fetch_boidu_lyrics;
 use crate::providers::lrclib::fetch_lrclib_lyrics;
 use crate::providers::lrcmux::fetch_lrcmux_lyrics;
 use crate::providers::lyricsplus::fetch_lyricsplus_lyrics;
-use crate::providers::musixmatch::fetch_musixmatch_lyrics;
 use crate::providers::netease::fetch_netease_lyrics;
 use crate::providers::translation::translate_text;
 use crate::providers::ttmllib::fetch_ttmllib_lyrics;
@@ -150,7 +149,7 @@ impl LyricsClient {
         );
 
         let client = self.reqwest_client.clone();
-        let (tx, rx) = mpsc::channel::<(usize, Option<TtmlHit>, Option<LrcHit>)>(11);
+        let (tx, rx) = mpsc::channel::<(usize, Option<TtmlHit>, Option<LrcHit>)>(10);
 
         // 0. LyricsPlus (Top Priority - Native Apple Music TTML with multi-agent support & word timing)
         {
@@ -357,59 +356,7 @@ impl LyricsClient {
             });
         }
 
-        // 4. Musixmatch
-        {
-            let client_c = client.clone();
-            let title_c = title.to_string();
-            let artist_c = artist.to_string();
-            let album_c = album.to_string();
-            let tx_c = tx.clone();
-            tokio::spawn(async move {
-                let t = Instant::now();
-                let res = tokio::time::timeout(
-                    Duration::from_secs(6),
-                    fetch_musixmatch_lyrics(&client_c, &title_c, &artist_c, &album_c, duration),
-                )
-                .await;
-                let hit = match res {
-                    Ok(Ok(res)) => {
-                        let is_ttml = res
-                            .synced
-                            .as_ref()
-                            .is_some_and(|s| is_karaoke_or_ttml_format(s));
-                        dprintln!(
-                            "  ├─ Musixmatch {} ✅ ({}ms) | {} bytes",
-                            if is_ttml { "TTML" } else { "LRC" },
-                            t.elapsed().as_millis(),
-                            res.synced.as_ref().map(|s| s.len()).unwrap_or(0)
-                        );
-                        (
-                            is_ttml.then(|| TtmlHit {
-                                content: res.synced.clone().unwrap_or_default(),
-                                plain: res.plain.clone(),
-                                provider: "Musixmatch (TTML)".into(),
-                            }),
-                            res.synced.map(|content| LrcHit {
-                                content,
-                                plain: res.plain,
-                                provider: "Musixmatch".into(),
-                            }),
-                        )
-                    }
-                    Ok(Err(e)) => {
-                        dprintln!("  ├─ Musixmatch ❌ ({}ms) {}", t.elapsed().as_millis(), e);
-                        (None, None)
-                    }
-                    Err(_) => {
-                        dprintln!("  ├─ Musixmatch ❌ ({}ms) Timeout", t.elapsed().as_millis());
-                        (None, None)
-                    }
-                };
-                let _ = tx_c.send((4, hit.0, hit.1)).await;
-            });
-        }
-
-        // 5. Binimum
+        // 4. Binimum
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -457,11 +404,11 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((5, hit.0, hit.1)).await;
+                let _ = tx_c.send((4, hit.0, hit.1)).await;
             });
         }
 
-        // 6. LRCMux
+        // 5. LRCMux
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -509,19 +456,19 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((6, hit.0, hit.1)).await;
+                let _ = tx_c.send((5, hit.0, hit.1)).await;
             });
         }
 
-        // 7. Unison
+        // 6. Unison
         {
             let tx_c = tx.clone();
             tokio::spawn(async move {
-                let _ = tx_c.send((7, None, None)).await;
+                let _ = tx_c.send((6, None, None)).await;
             });
         }
 
-        // 8. TTMLLIB
+        // 7. TTMLLIB
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -569,11 +516,11 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((8, hit.0, hit.1)).await;
+                let _ = tx_c.send((7, hit.0, hit.1)).await;
             });
         }
 
-        // 9. LRCLIB
+        // 8. LRCLIB
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -617,11 +564,11 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((9, hit.0, hit.1)).await;
+                let _ = tx_c.send((8, hit.0, hit.1)).await;
             });
         }
 
-        // 10. NetEase
+        // 9. NetEase
         {
             let client_c = client.clone();
             let title_c = title.to_string();
@@ -664,11 +611,11 @@ impl LyricsClient {
                         (None, None)
                     }
                 };
-                let _ = tx_c.send((10, hit.0, hit.1)).await;
+                let _ = tx_c.send((9, hit.0, hit.1)).await;
             });
         }
 
-        // Drop local sender handle so receiver closes when all 11 background tasks complete
+        // Drop local sender handle so receiver closes when all 10 background tasks complete
         drop(tx);
 
         // Collect hits from all providers. When the priority winner (idx 0,
@@ -711,8 +658,8 @@ impl LyricsClient {
         let mut available_hits: Vec<ProviderHit> = Vec::new();
         let mut seen_providers = std::collections::HashSet::new();
 
-        // 1. Collect all Word-by-Word / TTML hits in priority order 0..11
-        for idx in 0..11 {
+        // 1. Collect all Word-by-Word / TTML hits in priority order 0..10
+        for idx in 0..10 {
             if let Some(hit) = ttml_hits.remove(&idx) {
                 seen_providers.insert(hit.provider.clone());
                 available_hits.push(ProviderHit {
@@ -723,8 +670,8 @@ impl LyricsClient {
             }
         }
 
-        // 2. Collect all Line-by-Line LRC hits in priority order 0..11
-        for idx in 0..11 {
+        // 2. Collect all Line-by-Line LRC hits in priority order 0..10
+        for idx in 0..10 {
             if let Some(hit) = lrc_hits.remove(&idx) {
                 if !seen_providers.contains(&hit.provider) {
                     seen_providers.insert(hit.provider.clone());

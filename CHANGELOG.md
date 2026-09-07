@@ -1,3 +1,13 @@
+# Release Notes - v0.1.15 📜✨
+
+## 🌟 Highlights & Major Improvements
+
+- **🚫 Musixmatch Direct Provider Removed**:
+  - Removed direct Musixmatch API fetching (`apic-desktop.musixmatch.com`) and standalone provider module (`src/providers/musixmatch.rs`).
+  - Streamlined provider race pipeline in `src/lyrics_api.rs`, renumbering concurrent providers (0..9) for faster execution and lower overall network overhead.
+
+---
+
 # Release Notes - v0.1.14 📜✨
 
 ## 🌟 Highlights & Major Improvements
